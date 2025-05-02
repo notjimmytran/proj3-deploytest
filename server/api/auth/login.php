@@ -1,6 +1,6 @@
 <?php
 session_start();
-require_once '../../config/db.php';
+require_once '/Users/jonathanermias/Documents/GitHub/project3/server/config/db.php';
 
 $data = json_decode(file_get_contents('php://input'), true);
 $username = trim($data['username'] ?? '');

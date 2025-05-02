@@ -1,6 +1,8 @@
+const API_URL = 'http://localhost:8000/';
+
 export async function register(userData) {
     try {
-      const response = await fetch('../server/api/auth/register.php', {
+      const response = await fetch(`${API_URL}api/auth/register.php`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(userData),
@@ -15,7 +17,7 @@ export async function register(userData) {
   
   export async function login(credentials) {
     try {
-      const response = await fetch('../server/api/auth/login.php', {
+      const response = await fetch(`${API_URL}api/auth/login.php`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials),
@@ -30,7 +32,7 @@ export async function register(userData) {
   
   export async function logout() {
     try {
-      const response = await fetch('../server/api/auth/logout.php', {
+      const response = await fetch(`${API_URL}api/auth/logout.php`, {
         method: 'POST',
         credentials: 'include'
       });
