@@ -2,20 +2,34 @@ const API_URL = 'http://localhost:8000/';
 
 export async function startSession() {
     try {
+        console.log("Starting session - sending request to:", `${API_URL}api/game/save_session.php`);
+        
         const response = await fetch(`${API_URL}api/game/save_session.php`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'start' }),
             credentials: 'include'
         });
+        
+        console.log("Response status:", response.status);
+        
         if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ error: 'Failed to start session' }));
-            console.error('Start session error response:', response.status, errorData);
+            let errorData;
+            try {
+                errorData = await response.json();
+                console.error("Error response data:", errorData);
+            } catch (e) {
+                console.error("Couldn't parse error response:", e);
+                errorData = { error: 'Failed to start session' };
+            }
             return { success: false, error: errorData.error || `HTTP error ${response.status}` };
         }
-        return await response.json();
+        
+        const data = await response.json();
+        console.log("Success response:", data);
+        return data;
     } catch (error) {
-        console.error('Start session network error:', error);
+        console.error("Network error in startSession:", error);
         return { success: false, error: 'Network error occurred while starting session' };
     }
 }
