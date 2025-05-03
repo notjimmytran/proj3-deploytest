@@ -1,6 +1,24 @@
 <?php
+// Ensure no output before headers
+ob_start();
+
+// Set CORS headers
+header("Access-Control-Allow-Origin: http://localhost:3000");
+header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Credentials: true");
+header("Content-Type: application/json");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
 session_start();
-require_once '/Users/jonathanermias/Documents/GitHub/project3/server/config/db.php';
+require_once __DIR__ . '/../../config/db.php';
+
+// Clear any previous output
+ob_end_clean();
 
 $data = json_decode(file_get_contents('php://input'), true);
 $username = trim($data['username'] ?? '');
