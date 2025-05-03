@@ -151,6 +151,10 @@ export default function Game() {
   const [sessionId, setSessionId] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const positionRef = useRef({ x: 0, y: 0 });
+  const clickTimeoutRef = useRef(null);
 
   // Pattern management states
   const [savedPatterns, setSavedPatterns] = useState([]);
@@ -164,8 +168,6 @@ export default function Game() {
   // Refs for keeping latest state in async callbacks
   const runningRef = useRef(isRunning);
   runningRef.current = isRunning;
-  const positionRef = useRef(position);
-  positionRef.current = position;
   const gridRef = useRef(grid);
   gridRef.current = grid;
   const rafRef = useRef(null);
@@ -287,6 +289,78 @@ export default function Game() {
     }, 5000);
   };
 
+  const handleMouseDown = (e) => {
+    // Clear any pending click timeout
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+
+    if (e.button === 1 || e.button === 2) { // Middle click or right click for panning
+      setIsPanning(true);
+      setPanStart({
+        x: e.clientX,
+        y: e.clientY
+      });
+      e.preventDefault(); // Prevent context menu on right click
+      document.body.style.cursor = 'grabbing';
+    } else if (e.button === 0) { // Left click for cell interaction
+      setIsDragging(false);
+      setDragStart({
+        x: e.clientX,
+        y: e.clientY
+      });
+      setDragDistance(0);
+
+      // Calculate cell position immediately
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const containerWidth = containerRef.current.clientWidth;
+      const containerHeight = containerRef.current.clientHeight;
+
+      const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
+      const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
+
+      const col = Math.floor((relativeX - position.x) / cellSize);
+      const row = Math.floor((relativeY - position.y) / cellSize);
+
+      // Store the cell coordinates for potential activation
+      const pendingCell = { row, col };
+
+      // Add a very short delay (50ms) to check if this is a pan or a click
+      clickTimeoutRef.current = setTimeout(() => {
+        if (!isPanning && !isDragging) {
+          toggleCell(pendingCell.row, pendingCell.col);
+        }
+      }, 50);
+    }
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUpGlobal, { once: true });
+  };
+
+  const handleMouseMove = useCallback(
+    throttle((e) => {
+      if (isPanning) {
+        const dx = e.clientX - panStart.x;
+        const dy = e.clientY - panStart.y;
+        setPosition({ x: dx, y: dy });
+        positionRef.current = { x: dx, y: dy };
+        setGrid(prev => new Map(prev));
+      } else if (isDragging) {
+        const newX = e.clientX - dragStart.x;
+        const newY = e.clientY - dragStart.y;
+        const distance = Math.sqrt(
+          Math.pow(newX - position.x, 2) + 
+          Math.pow(newY - position.y, 2)
+        );
+
+        // Increase drag distance threshold to 10 pixels
+        if (distance > 10) {
+          setIsDragging(true);
+          // If we start dragging, cancel any pending cell activation
+          if (clickTimeoutRef.current) {
+            clearTimeout(clickTimeoutRef.current);
+            clickTimeoutRef.current = null;
+          }
   // Load user's saved patterns from backend
   const loadSavedPatterns = useCallback(async () => {
     if (!user?.id) return;
@@ -417,16 +491,88 @@ export default function Game() {
         if (rafRef.current) {
           cancelAnimationFrame(rafRef.current);
         }
-        rafRef.current = requestAnimationFrame(() => {
-          setPosition({
-            x: newX,
-            y: newY
+
+        if (isDragging) {
+          if (rafRef.current) {
+            cancelAnimationFrame(rafRef.current);
+          }
+          rafRef.current = requestAnimationFrame(() => {
+            positionRef.current = { x: newX, y: newY };
+            setGrid(prev => new Map(prev));
+            rafRef.current = null;
           });
-          rafRef.current = null;
-        });
+        }
+        setDragDistance(distance);
       }
-      setDragDistance(distance);
-    }, 16), [dragStart, isDragging]);
+    }, 16), [isPanning, isDragging, dragStart, panStart]);
+
+  const handleMouseUpGlobal = useCallback((e) => {
+    window.removeEventListener('mousemove', handleMouseMove);
+    
+    if (isPanning) {
+      setIsPanning(false);
+      setPanStart({ x: 0, y: 0 });
+      document.body.style.cursor = 'default';
+    } else {
+      setIsDragging(false);
+      setDragStart({ x: 0, y: 0 });
+      setDragDistance(0);
+    }
+
+    // Clear any pending click timeout
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+  }, [isPanning, isDragging, handleMouseMove]);
+
+  const loadPattern = useCallback((patternName) => {
+    if (!patternName || !containerRef.current) return;
+
+    const patternData = PATTERNS[patternName];
+    if (!patternData) return;
+
+    const pattern = patternData.pattern;
+    const newGrid = new Map();
+
+    // Calculate pattern dimensions
+    const patternHeight = pattern.length;
+    const patternWidth = pattern[0].length;
+
+    // Calculate center offset for the pattern
+    const startRow = -Math.floor(patternHeight / 2);
+    const startCol = -Math.floor(patternWidth / 2);
+
+    // Place pattern relative to (0,0)
+    for (let i = 0; i < patternHeight; i++) {
+      for (let j = 0; j < patternWidth; j++) {
+        if (pattern[i][j] === 1) {
+          newGrid.set(getCellKey(startRow + i, startCol + j), true);
+        }
+      }
+    }
+
+    setGrid(newGrid);
+    setGeneration(0);
+    setPopulation(newGrid.size);
+
+    // Center the view on the pattern's approximate center (0,0 in grid coordinates)
+    positionRef.current = { x: 0, y: 0 };
+    setGrid(prev => new Map(prev));
+  }, [getCellKey]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (clickTimeoutRef.current) {
+        clearTimeout(clickTimeoutRef.current);
+      }
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+
+    };
+  }, []);
 
   // Render only visible cells in the viewport
   const renderGrid = useCallback(() => {
@@ -477,7 +623,6 @@ export default function Game() {
     };
   }, []);
 
-  // Main simulation loop for Conway's Game of Life
   const runSimulation = useCallback(() => {
     if (!runningRef.current) return;
     setGrid(g => {
@@ -519,6 +664,7 @@ export default function Game() {
     setGeneration(g => g + 1);
     setTimeout(runSimulation, 100);
   }, [getCellKey]);
+
 
   // Mouse down handler for grid drag or cell toggle
   const handleMouseDown = (e) => {
@@ -580,7 +726,6 @@ export default function Game() {
     });
   }, [getCellKey]);
 
-  // On mount: reset position and start session if user is logged in
   useEffect(() => {
     if (containerRef.current) {
       setPosition({
@@ -628,8 +773,12 @@ export default function Game() {
       if (containerRef.current) {
         const containerWidth = containerRef.current.clientWidth;
         const containerHeight = containerRef.current.clientHeight;
-        const viewCenterX = (containerWidth / 2 - positionRef.current.x) / prevSize;
-        const viewCenterY = (containerHeight / 2 - positionRef.current.y) / prevSize;
+
+        // Calculate the grid coordinate at the center of the viewport BEFORE zoom
+        const viewCenterX = (containerWidth / 2 - position.x) / prevSize;
+        const viewCenterY = (containerHeight / 2 - position.y) / prevSize;
+
+        // Calculate the new position to keep the same grid coordinate at the center AFTER zoom
         const newX = containerWidth / 2 - viewCenterX * newSize;
         const newY = containerHeight / 2 - viewCenterY * newSize;
         setPosition({ x: newX, y: newY });
@@ -950,18 +1099,15 @@ export default function Game() {
         {/* Main grid area */}
         <div
           ref={containerRef}
-          style={{
-            width: '100%',
-            flex: 1,
-            position: 'relative',
-            overflow: 'hidden',
-            marginBottom: '0.75rem',
-            background: '#1a1a1a',
-            borderRadius: '12px',
-            minHeight: 0,
-            cursor: isDragging ? 'grabbing' : 'grab'
-          }}
           onMouseDown={handleMouseDown}
+          onContextMenu={(e) => e.preventDefault()} // Prevent context menu
+          style={{
+            position: 'relative',
+            width: '100%',
+            height: '100%',
+            overflow: 'hidden',
+            cursor: isPanning ? 'grabbing' : 'default'
+          }}
         >
           <div style={{
             position: 'absolute',
