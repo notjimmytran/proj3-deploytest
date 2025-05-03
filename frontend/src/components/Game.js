@@ -1,8 +1,22 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-// We'll calculate GRID_SIZE dynamically
-const CELL_SIZE = 25; // Keep cell size constant
+// Add throttle utility at the top
+const throttle = (func, limit) => {
+  let inThrottle;
+  return function(...args) {
+    if (!inThrottle) {
+      func.apply(this, args);
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  };
+};
+
+const MIN_CELL_SIZE = 15;
+const MAX_CELL_SIZE = 40;
+const DEFAULT_CELL_SIZE = 25;
+const DEFAULT_GRID_SIZE = 50;
 
 // Predefined patterns
 const PATTERNS = {
@@ -53,183 +67,490 @@ const PATTERNS = {
   }
 };
 
+const VIEWPORT_SIZE = 40; // Increased viewport size for better coverage
+
 export default function Game() {
   const navigate = useNavigate();
   const user = JSON.parse(localStorage.getItem('user'));
   const containerRef = useRef(null);
-  const [gridSize, setGridSize] = useState({ rows: 20, cols: 20 });
-  const [grid, setGrid] = useState(() => {
-    return Array(20).fill(null).map(() => Array(20).fill(false));
-  });
+  const [gridSize, setGridSize] = useState({ rows: DEFAULT_GRID_SIZE, cols: DEFAULT_GRID_SIZE });
+  const [cellSize, setCellSize] = useState(DEFAULT_CELL_SIZE);
+  const [grid, setGrid] = useState(() => new Map());
+  const [position, setPosition] = useState(() => ({ x: 0, y: 0 }));
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [dragDistance, setDragDistance] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [population, setPopulation] = useState(0);
   const runningRef = useRef(isRunning);
   runningRef.current = isRunning;
+  const positionRef = useRef(position);
+  positionRef.current = position;
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
+  const rafRef = useRef(null);
 
-  // Calculate grid dimensions based on container size
-  useEffect(() => {
-    const updateGridSize = () => {
-      if (containerRef.current) {
-        const containerWidth = containerRef.current.clientWidth;
-        const containerHeight = containerRef.current.clientHeight;
-        const cols = Math.floor(containerWidth / CELL_SIZE);
-        const rows = Math.floor(containerHeight / CELL_SIZE);
-        
-        if (cols !== gridSize.cols || rows !== gridSize.rows) {
-          setGridSize({ rows, cols });
-          setGrid(Array(rows).fill(null).map(() => Array(cols).fill(false)));
-          setGeneration(0);
-          setPopulation(0);
-          setIsRunning(false);
+  // Pre-calculate container dimensions
+  const containerDimensions = useCallback(() => {
+    if (!containerRef.current) return { width: 0, height: 0 };
+    const rect = containerRef.current.getBoundingClientRect();
+    return {
+      width: rect.width,
+      height: rect.height
+    };
+  }, []);
+
+  // Memoize cell key generation
+  const getCellKey = useCallback((row, col) => `${row},${col}`, []);
+
+  // Memoize the cell style creation
+  const getCellStyle = useCallback((x, y, isAlive, size, isDragging) => ({
+    width: size,
+    height: size,
+    backgroundColor: isAlive ? '#06d6a0' : '#2a2a2a',
+    border: '1px solid #333',
+    cursor: isDragging ? 'grabbing' : 'pointer',
+    position: 'absolute',
+    left: x,
+    top: y,
+    willChange: 'transform',
+    transform: 'translate3d(0,0,0)',
+    pointerEvents: isDragging ? 'none' : 'auto'
+  }), []);
+
+  // Add a function to calculate pattern bounds
+  const getPatternBounds = useCallback(() => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const [key] of grid) {
+      const [row, col] = key.split(',').map(Number);
+      minX = Math.min(minX, col);
+      maxX = Math.max(maxX, col);
+      minY = Math.min(minY, row);
+      maxY = Math.max(maxY, row);
+    }
+    return { minX, maxX, minY, maxY };
+  }, [grid]);
+
+  const getVisibleCells = useCallback(() => {
+    const { width, height } = containerDimensions();
+    if (!width || !height) return { startRow: 0, endRow: 0, startCol: 0, endCol: 0 };
+    
+    // Calculate cells needed to fill the container plus some padding
+    const colsNeeded = Math.ceil(width / cellSize) + 4;
+    const rowsNeeded = Math.ceil(height / cellSize) + 4;
+    
+    // Calculate center position in cell coordinates
+    const centerX = -position.x / cellSize;
+    const centerY = -position.y / cellSize;
+    
+    return {
+      startRow: Math.floor(centerY - rowsNeeded/2),
+      endRow: Math.ceil(centerY + rowsNeeded/2),
+      startCol: Math.floor(centerX - colsNeeded/2),
+      endCol: Math.ceil(centerX + colsNeeded/2)
+    };
+  }, [cellSize, position, containerDimensions]);
+
+  const toggleCell = useCallback((row, col) => {
+    const key = getCellKey(row, col);
+    setGrid(prevGrid => {
+      const newGrid = new Map(prevGrid);
+      if (newGrid.has(key)) {
+        newGrid.delete(key);
+      } else {
+        newGrid.set(key, true);
+      }
+      return newGrid;
+    });
+  }, [getCellKey]);
+
+  const handleMouseMove = useCallback((e) => {
+    if (dragStart.x === 0 && dragStart.y === 0) return;
+    
+    const newX = e.clientX - dragStart.x;
+    const newY = e.clientY - dragStart.y;
+    const dx = newX - position.x;
+    const dy = newY - position.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    
+    // Only start dragging after moving a certain distance
+    if (distance > 5) {
+      setIsDragging(true);
+      
+      // Use RAF for smoother position updates
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+      rafRef.current = requestAnimationFrame(() => {
+        setPosition({
+          x: newX,
+          y: newY
+        });
+        rafRef.current = null;
+      });
+    }
+    setDragDistance(distance);
+  }, [isDragging, dragStart, position]);
+
+  const renderGrid = useCallback(() => {
+    const { startRow, endRow, startCol, endCol } = getVisibleCells();
+    const cells = [];
+    
+    if (!containerRef.current) return cells;
+
+    const containerWidth = containerRef.current.clientWidth;
+    const containerHeight = containerRef.current.clientHeight;
+
+    // Calculate visible area with padding
+    const padding = 5; // Add some padding cells
+    const visibleStartRow = startRow - padding;
+    const visibleEndRow = endRow + padding;
+    const visibleStartCol = startCol - padding;
+    const visibleEndCol = endCol + padding;
+
+    // Pre-calculate common values
+    const halfContainerWidth = containerWidth / 2;
+    const halfContainerHeight = containerHeight / 2;
+    const currentPosition = positionRef.current;
+    const currentGrid = gridRef.current;
+
+    for (let row = visibleStartRow; row < visibleEndRow; row++) {
+      for (let col = visibleStartCol; col < visibleEndCol; col++) {
+        const key = getCellKey(row, col);
+        const x = (col * cellSize) + currentPosition.x + halfContainerWidth;
+        const y = (row * cellSize) + currentPosition.y + halfContainerHeight;
+
+        // Skip cells that would be outside the viewport
+        if (x < -cellSize || x > containerWidth + cellSize || 
+            y < -cellSize || y > containerHeight + cellSize) {
+          continue;
         }
+
+        cells.push(
+          <div
+            key={key}
+            style={getCellStyle(x, y, currentGrid.has(key), cellSize, isDragging)}
+          />
+        );
+      }
+    }
+    return cells;
+  }, [cellSize, isDragging, getVisibleCells, getCellStyle, getCellKey]);
+
+  // Cleanup RAF on unmount
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
       }
     };
-
-    updateGridSize();
-    window.addEventListener('resize', updateGridSize);
-    return () => window.removeEventListener('resize', updateGridSize);
   }, []);
 
   const runSimulation = useCallback(() => {
     if (!runningRef.current) return;
 
     setGrid(g => {
-      const nextGen = g.map((row, i) =>
-        row.map((cell, j) => {
-          let neighbors = 0;
-          for (let di = -1; di <= 1; di++) {
-            for (let dj = -1; dj <= 1; dj++) {
-              if (di === 0 && dj === 0) continue;
-              const newI = (i + di + gridSize.rows) % gridSize.rows;
-              const newJ = (j + dj + gridSize.cols) % gridSize.cols;
-              if (g[newI][newJ]) neighbors++;
-            }
+      const newGrid = new Map();
+      const activeCells = new Set();
+      
+      // Collect all active cells and their neighbors
+      for (const [key] of g) {
+        const [row, col] = key.split(',').map(Number);
+        activeCells.add(key);
+        
+        // Add all neighbors to check
+        for (let i = -1; i <= 1; i++) {
+          for (let j = -1; j <= 1; j++) {
+            if (i === 0 && j === 0) continue;
+            const neighborKey = getCellKey(row + i, col + j);
+            activeCells.add(neighborKey);
           }
-          if (cell && (neighbors < 2 || neighbors > 3)) return false;
-          if (!cell && neighbors === 3) return true;
-          return cell;
-        })
-      );
-      return nextGen;
+        }
+      }
+
+      // Check each cell that needs updating
+      for (const key of activeCells) {
+        const [row, col] = key.split(',').map(Number);
+        let neighbors = 0;
+
+        // Count neighbors
+        for (let i = -1; i <= 1; i++) {
+          for (let j = -1; j <= 1; j++) {
+            if (i === 0 && j === 0) continue;
+            const neighborKey = getCellKey(row + i, col + j);
+            if (g.has(neighborKey)) neighbors++;
+          }
+        }
+
+        // Apply Game of Life rules
+        const isAlive = g.has(key);
+        if (isAlive && (neighbors === 2 || neighbors === 3)) {
+          newGrid.set(key, true);
+        } else if (!isAlive && neighbors === 3) {
+          newGrid.set(key, true);
+        }
+      }
+
+      return newGrid;
     });
 
-    // Move generation increment outside of setGrid
     setGeneration(g => g + 1);
-    
-    // Update population after grid update
     setGrid(currentGrid => {
-      const newPopulation = currentGrid.reduce((sum, row) => 
-        sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
-      );
-      setPopulation(newPopulation);
+      setPopulation(currentGrid.size);
       return currentGrid;
     });
 
     setTimeout(runSimulation, 100);
-  }, [gridSize]);
+  }, []);
 
-  // Function to load a pattern
-  const loadPattern = (patternName) => {
-    if (!patternName) return;
+  const handleMouseDown = (e) => {
+    if (e.button === 0) { // Left click
+      setIsDragging(false); // Start as not dragging
+      setDragStart({
+        x: e.clientX - position.x,
+        y: e.clientY - position.y
+      });
+      setDragDistance(0);
+    }
+  };
+
+  const handleMouseUp = (e) => {
+    // Only activate cell if we never started dragging
+    if (!isDragging && dragDistance <= 5) {
+      if (!containerRef.current) return;
+      
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const containerWidth = containerRef.current.clientWidth;
+      const containerHeight = containerRef.current.clientHeight;
+      
+      // Calculate relative position within the container
+      const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
+      const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
+      
+      // Calculate cell coordinates based on position and cell size
+      const col = Math.floor((relativeX - position.x) / cellSize);
+      const row = Math.floor((relativeY - position.y) / cellSize);
+      
+      // No need to wrap coordinates since we want an infinite grid
+      toggleCell(row, col);
+    }
+    
+    setIsDragging(false);
+    setDragStart({ x: 0, y: 0 });
+    setDragDistance(0);
+  };
+
+  const handleCellMouseDown = useCallback((row, col, e) => {
+    // Only handle cell activation if we're not already dragging
+    if (!isDragging && dragDistance <= 5) {
+      const wrappedRow = ((row % gridSize.rows) + gridSize.rows) % gridSize.rows;
+      const wrappedCol = ((col % gridSize.cols) + gridSize.cols) % gridSize.cols;
+      toggleCell(wrappedRow, wrappedCol);
+    }
+  }, [isDragging, gridSize.rows, gridSize.cols, toggleCell, dragDistance]);
+
+  const loadPattern = useCallback((patternName) => {
+    if (!patternName || !containerRef.current) return;
     
     const pattern = PATTERNS[patternName].pattern;
-    const newGrid = Array(gridSize.rows).fill(null).map(() => Array(gridSize.cols).fill(false));
+    const newGrid = new Map();
     
-    const startI = Math.floor((gridSize.rows - pattern.length) / 2);
-    const startJ = Math.floor((gridSize.cols - pattern[0].length) / 2);
+    // Get container dimensions
+    const containerWidth = containerRef.current.clientWidth;
+    const containerHeight = containerRef.current.clientHeight;
     
-    for (let i = 0; i < pattern.length; i++) {
-      for (let j = 0; j < pattern[i].length; j++) {
-        if (startI + i < gridSize.rows && startJ + j < gridSize.cols) {
-          newGrid[startI + i][startJ + j] = pattern[i][j] === 1;
+    // Calculate pattern dimensions
+    const patternWidth = pattern[0].length;
+    const patternHeight = pattern.length;
+
+    // Place pattern at (0,0) and let the position offset handle centering
+    for (let i = 0; i < patternHeight; i++) {
+      for (let j = 0; j < patternWidth; j++) {
+        if (pattern[i][j] === 1) {
+          newGrid.set(getCellKey(i - Math.floor(patternHeight/2), j - Math.floor(patternWidth/2)), true);
         }
       }
     }
     
     setGrid(newGrid);
     setGeneration(0);
-    const newPopulation = newGrid.reduce((sum, row) => 
-      sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
-    );
-    setPopulation(newPopulation);
-  };
+    setPopulation(newGrid.size);
 
-  // Function to advance 23 generations
-  const advance23Generations = async () => {
-    setIsRunning(false);
-    for (let i = 0; i < 23; i++) {
-      setGrid(g => {
-        const nextGen = g.map((row, i) =>
-          row.map((cell, j) => {
-            let neighbors = 0;
-            for (let di = -1; di <= 1; di++) {
-              for (let dj = -1; dj <= 1; dj++) {
-                if (di === 0 && dj === 0) continue;
-                const newI = (i + di + gridSize.rows) % gridSize.rows;
-                const newJ = (j + dj + gridSize.cols) % gridSize.cols;
-                if (g[newI][newJ]) neighbors++;
-              }
-            }
-            if (cell && (neighbors < 2 || neighbors > 3)) return false;
-            if (!cell && neighbors === 3) return true;
-            return cell;
-          })
-        );
-        return nextGen;
-      });
-      
-      // Increment generation after grid update
-      setGeneration(g => g + 1);
-      
-      // Update population after all updates
-      setGrid(currentGrid => {
-        const newPopulation = currentGrid.reduce((sum, row) => 
-          sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
-        );
-        setPopulation(newPopulation);
-        return currentGrid;
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-  };
-
-  // Update the Next Generation button handler too
-  const handleNextGeneration = () => {
-    setIsRunning(false);
-    setGrid(g => {
-      const nextGen = g.map((row, i) =>
-        row.map((cell, j) => {
-          let neighbors = 0;
-          for (let di = -1; di <= 1; di++) {
-            for (let dj = -1; dj <= 1; dj++) {
-              if (di === 0 && dj === 0) continue;
-              const newI = (i + di + gridSize.rows) % gridSize.rows;
-              const newJ = (j + dj + gridSize.cols) % gridSize.cols;
-              if (g[newI][newJ]) neighbors++;
-            }
-          }
-          if (cell && (neighbors < 2 || neighbors > 3)) return false;
-          if (!cell && neighbors === 3) return true;
-          return cell;
-        })
-      );
-      return nextGen;
+    // Calculate the position to center the pattern
+    // We multiply by cellSize since we need to convert grid coordinates to pixels
+    setPosition({
+      x: (containerWidth / 2) - ((patternWidth / 2) * cellSize),
+      y: (containerHeight / 2) - ((patternHeight / 2) * cellSize)
     });
+  }, [getCellKey, cellSize]);
+
+  // Center grid on mount and cell size change
+  useEffect(() => {
+    if (containerRef.current) {
+      const containerWidth = containerRef.current.clientWidth;
+      const containerHeight = containerRef.current.clientHeight;
+      
+      setPosition({
+        x: -(gridSize.cols * cellSize) / 2 + containerWidth / 2,
+        y: -(gridSize.rows * cellSize) / 2 + containerHeight / 2
+      });
+    }
+  }, [cellSize, gridSize.cols, gridSize.rows]);
+
+  // Add mouse event listeners for drag handling
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('mouseleave', handleGlobalMouseUp);
     
-    // Increment generation after grid update
+    return () => {
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('mouseleave', handleGlobalMouseUp);
+    };
+  }, []);
+
+  const handleZoom = useCallback((zoomIn) => {
+    setCellSize(prevSize => {
+      const newSize = zoomIn ? 
+        Math.min(prevSize + 5, MAX_CELL_SIZE) : 
+        Math.max(prevSize - 5, MIN_CELL_SIZE);
+
+      // If zooming out, maintain the pattern's position relative to the viewport
+      if (!zoomIn && containerRef.current) {
+        const containerWidth = containerRef.current.clientWidth;
+        const containerHeight = containerRef.current.clientHeight;
+        
+        // Calculate the current center of the viewport
+        const currentCenterX = -position.x / prevSize;
+        const currentCenterY = -position.y / prevSize;
+        
+        // Calculate the new position to maintain the same center point
+        let newX = -(currentCenterX * newSize) + containerWidth / 2;
+        let newY = -(currentCenterY * newSize) + containerHeight / 2;
+
+        // If we're at minimum zoom, ensure the pattern stays centered
+        if (newSize === MIN_CELL_SIZE) {
+          // Find the center of the pattern
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          for (const [key] of grid) {
+            const [row, col] = key.split(',').map(Number);
+            minX = Math.min(minX, col);
+            maxX = Math.max(maxX, col);
+            minY = Math.min(minY, row);
+            maxY = Math.max(maxY, row);
+          }
+
+          if (minX !== Infinity) {
+            const patternCenterX = (minX + maxX) / 2;
+            const patternCenterY = (minY + maxY) / 2;
+            
+            newX = -(patternCenterX * newSize) + containerWidth / 2;
+            newY = -(patternCenterY * newSize) + containerHeight / 2;
+          }
+        }
+        
+        setPosition({
+          x: newX,
+          y: newY
+        });
+      }
+
+      return newSize;
+    });
+  }, [position, grid]);
+
+  const resetGrid = () => {
+    setGrid(new Map());
+    setGeneration(0);
+    setIsRunning(false);
+    setPopulation(0);
+  };
+
+  const handleNextGeneration = useCallback(() => {
+    setGrid(g => {
+      const newGrid = new Map();
+      const activeCells = new Set();
+      
+      // Collect all active cells and their neighbors
+      for (const [key] of g) {
+        const [row, col] = key.split(',').map(Number);
+        activeCells.add(key);
+        
+        // Add all neighbors to check
+        for (let i = -1; i <= 1; i++) {
+          for (let j = -1; j <= 1; j++) {
+            if (i === 0 && j === 0) continue;
+            const neighborKey = getCellKey(row + i, col + j);
+            activeCells.add(neighborKey);
+          }
+        }
+      }
+
+      // Check each cell that needs updating
+      for (const key of activeCells) {
+        const [row, col] = key.split(',').map(Number);
+        let neighbors = 0;
+
+        // Count neighbors
+        for (let i = -1; i <= 1; i++) {
+          for (let j = -1; j <= 1; j++) {
+            if (i === 0 && j === 0) continue;
+            const neighborKey = getCellKey(row + i, col + j);
+            if (g.has(neighborKey)) neighbors++;
+          }
+        }
+
+        // Apply Game of Life rules
+        const isAlive = g.has(key);
+        if (isAlive && (neighbors === 2 || neighbors === 3)) {
+          newGrid.set(key, true);
+        } else if (!isAlive && neighbors === 3) {
+          newGrid.set(key, true);
+        }
+      }
+
+      return newGrid;
+    });
+
     setGeneration(g => g + 1);
-    
-    // Update population after all updates
     setGrid(currentGrid => {
-      const newPopulation = currentGrid.reduce((sum, row) => 
-        sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
-      );
-      setPopulation(newPopulation);
+      setPopulation(currentGrid.size);
       return currentGrid;
     });
-  };
+  }, [getCellKey]);
+
+  const advance23Generations = useCallback(() => {
+    // Store current running state
+    const wasRunning = isRunning;
+    if (wasRunning) {
+      setIsRunning(false);
+    }
+
+    // Advance 23 generations with delay
+    let currentStep = 0;
+    const stepInterval = 60; // 100ms between steps
+
+    const advanceStep = () => {
+      if (currentStep < 23) {
+        handleNextGeneration();
+        currentStep++;
+        setTimeout(advanceStep, stepInterval);
+      } else {
+        // Restore previous running state
+        if (wasRunning) {
+          setIsRunning(true);
+          runningRef.current = true;
+          runSimulation();
+        }
+      }
+    };
+
+    advanceStep();
+  }, [handleNextGeneration, isRunning, runSimulation]);
 
   if (!user) {
     navigate('/login');
@@ -241,62 +562,76 @@ export default function Game() {
     navigate('/login');
   };
 
-  const toggleCell = (i, j) => {
-    const newGrid = grid.map((row, rowIndex) =>
-      row.map((cell, colIndex) =>
-        rowIndex === i && colIndex === j ? !cell : cell
-      )
-    );
-    setGrid(newGrid);
-    const newPopulation = newGrid.reduce((sum, row) => 
-      sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
-    );
-    setPopulation(newPopulation);
-  };
-
-  const resetGrid = () => {
-    setGrid(Array(gridSize.rows).fill(null).map(() => Array(gridSize.cols).fill(false)));
-    setGeneration(0);
-    setIsRunning(false);
-    setPopulation(0);
-  };
-
   return (
     <div style={{
-      minHeight: '100vh',
+      height: '100vh',
       background: 'linear-gradient(135deg, #073b4c 0%, #061a40 100%)',
-      padding: '2rem',
+      padding: '0.75rem',
       color: 'white',
       display: 'flex',
-      flexDirection: 'column'
+      flexDirection: 'column',
+      overflow: 'hidden',
+      boxSizing: 'border-box'
     }}>
       <div style={{
         maxWidth: '1200px',
         margin: '0 auto',
         width: '100%',
+        height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        height: '90vh'
+        boxSizing: 'border-box'
       }}>
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          marginBottom: '1.5rem'
+          alignItems: 'center',
+          marginBottom: '0.75rem',
+          flexShrink: 0
         }}>
-          <div style={{ marginRight: '2rem' }}>
-            <h2 style={{ 
-              color: '#90e0ef', 
-              margin: 0,
-              fontSize: '1.5rem',
-              fontWeight: '500'
-            }}>Generation: {generation}</h2>
-            <h3 style={{ 
-              color: '#90e0ef', 
-              margin: '0.5rem 0 0 0',
-              fontSize: '1.2rem',
-              fontWeight: '500'
-            }}>Population: {population}</h3>
+          <div style={{ 
+            background: 'rgba(26, 26, 26, 0.5)',
+            padding: '0.75rem 1.25rem',
+            borderRadius: '12px',
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid rgba(255, 255, 255, 0.1)'
+          }}>
+            <div style={{ 
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              marginBottom: '0.25rem'
+            }}>
+              <span style={{ 
+                color: '#90e0ef',
+                fontSize: '1rem',
+                fontWeight: '500'
+              }}>Generation</span>
+              <span style={{ 
+                color: '#06d6a0',
+                fontSize: '1.2rem',
+                fontWeight: '600',
+                fontFamily: 'monospace'
+              }}>{generation}</span>
+            </div>
+            <div style={{ 
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}>
+              <span style={{ 
+                color: '#90e0ef',
+                fontSize: '1rem',
+                fontWeight: '500'
+              }}>Population</span>
+              <span style={{ 
+                color: '#06d6a0',
+                fontSize: '1.2rem',
+                fontWeight: '600',
+                fontFamily: 'monospace'
+              }}>{population}</span>
+            </div>
           </div>
           <button
             onClick={handleLogout}
@@ -307,7 +642,8 @@ export default function Game() {
               background: '#ff686b',
               color: 'white',
               cursor: 'pointer',
-              flexShrink: 0
+              height: 'fit-content',
+              alignSelf: 'center'
             }}
           >
             Logout
@@ -319,34 +655,23 @@ export default function Game() {
           style={{
             width: '100%',
             flex: 1,
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            marginBottom: '1.5rem'
+            position: 'relative',
+            overflow: 'hidden',
+            marginBottom: '0.75rem',
+            background: '#1a1a1a',
+            borderRadius: '12px',
+            minHeight: 0
           }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
         >
           <div style={{
-            display: 'grid',
-            gridTemplateColumns: `repeat(${gridSize.cols}, ${CELL_SIZE}px)`,
-            gap: '1px',
-            background: '#1a1a1a',
-            padding: '1px',
+            position: 'absolute',
+            inset: 0,
+            cursor: isDragging ? 'grabbing' : 'grab'
           }}>
-            {grid.map((row, i) =>
-              row.map((cell, j) => (
-                <div
-                  key={`${i}-${j}`}
-                  onClick={() => toggleCell(i, j)}
-                  style={{
-                    width: `${CELL_SIZE}px`,
-                    height: `${CELL_SIZE}px`,
-                    backgroundColor: cell ? '#06d6a0' : '#2a2a2a',
-                    border: '1px solid #333',
-                    cursor: 'pointer'
-                  }}
-                />
-              ))
-            )}
+            {renderGrid()}
           </div>
         </div>
 
@@ -355,11 +680,51 @@ export default function Game() {
           gap: '1rem',
           justifyContent: 'center',
           flexWrap: 'wrap',
-          padding: '1rem',
+          padding: '0.75rem',
           background: 'rgba(26, 26, 26, 0.5)',
           borderRadius: '12px',
-          marginBottom: '2rem'
+          marginBottom: '0'
         }}>
+          <button
+            onClick={() => handleZoom(false)}
+            style={{
+              padding: '0.5rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: '#0aefff',
+              color: 'white',
+              cursor: 'pointer',
+              width: '32px',
+              height: '32px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.2rem',
+              fontWeight: 'bold'
+            }}
+          >
+            -
+          </button>
+          <button
+            onClick={() => handleZoom(true)}
+            style={{
+              padding: '0.5rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: '#0aefff',
+              color: 'white',
+              cursor: 'pointer',
+              width: '32px',
+              height: '32px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.2rem',
+              fontWeight: 'bold'
+            }}
+          >
+            +
+          </button>
           <button
             onClick={() => {
               setIsRunning(!isRunning);
@@ -451,4 +816,4 @@ export default function Game() {
       </div>
     </div>
   );
-} 
+}
