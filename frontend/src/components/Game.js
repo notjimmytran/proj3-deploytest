@@ -351,18 +351,24 @@ export default function Game() {
   }, [isDragging, gridSize.rows, gridSize.cols, toggleCell, dragDistance]);
 
   const loadPattern = useCallback((patternName) => {
-    if (!patternName) return;
+    if (!patternName || !containerRef.current) return;
     
     const pattern = PATTERNS[patternName].pattern;
     const newGrid = new Map();
     
-    const startRow = Math.floor(-pattern.length / 2);
-    const startCol = Math.floor(-pattern[0].length / 2);
+    // Get container dimensions
+    const containerWidth = containerRef.current.clientWidth;
+    const containerHeight = containerRef.current.clientHeight;
     
-    for (let i = 0; i < pattern.length; i++) {
-      for (let j = 0; j < pattern[i].length; j++) {
+    // Calculate pattern dimensions
+    const patternWidth = pattern[0].length;
+    const patternHeight = pattern.length;
+
+    // Place pattern at (0,0) and let the position offset handle centering
+    for (let i = 0; i < patternHeight; i++) {
+      for (let j = 0; j < patternWidth; j++) {
         if (pattern[i][j] === 1) {
-          newGrid.set(getCellKey(startRow + i, startCol + j), true);
+          newGrid.set(getCellKey(i - Math.floor(patternHeight/2), j - Math.floor(patternWidth/2)), true);
         }
       }
     }
@@ -370,7 +376,14 @@ export default function Game() {
     setGrid(newGrid);
     setGeneration(0);
     setPopulation(newGrid.size);
-  }, []);
+
+    // Calculate the position to center the pattern
+    // We multiply by cellSize since we need to convert grid coordinates to pixels
+    setPosition({
+      x: (containerWidth / 2) - ((patternWidth / 2) * cellSize),
+      y: (containerHeight / 2) - ((patternHeight / 2) * cellSize)
+    });
+  }, [getCellKey, cellSize]);
 
   // Center grid on mount and cell size change
   useEffect(() => {
@@ -551,105 +564,90 @@ export default function Game() {
 
   return (
     <div style={{
-      minHeight: '100vh',
+      height: '100vh',
       background: 'linear-gradient(135deg, #073b4c 0%, #061a40 100%)',
-      padding: '2rem',
+      padding: '0.75rem',
       color: 'white',
       display: 'flex',
-      flexDirection: 'column'
+      flexDirection: 'column',
+      overflow: 'hidden',
+      boxSizing: 'border-box'
     }}>
       <div style={{
         maxWidth: '1200px',
         margin: '0 auto',
         width: '100%',
+        height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        flex: 1
+        boxSizing: 'border-box'
       }}>
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          marginBottom: '1.5rem'
+          alignItems: 'center',
+          marginBottom: '0.75rem',
+          flexShrink: 0
         }}>
-          <div style={{ marginRight: '2rem' }}>
-            <h2 style={{ 
-              color: '#90e0ef', 
-              margin: 0,
-              fontSize: '1.5rem',
-              fontWeight: '500'
-            }}>Generation: {generation}</h2>
-            <h3 style={{ 
-              color: '#90e0ef', 
-              margin: '0.5rem 0 0 0',
-              fontSize: '1.2rem',
-              fontWeight: '500'
-            }}>Population: {population}</h3>
-          </div>
-          <div style={{ display: 'flex', gap: '1rem' }}>
-            <div style={{
+          <div style={{ 
+            background: 'rgba(26, 26, 26, 0.5)',
+            padding: '0.75rem 1.25rem',
+            borderRadius: '12px',
+            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid rgba(255, 255, 255, 0.1)'
+          }}>
+            <div style={{ 
               display: 'flex',
+              alignItems: 'center',
               gap: '0.5rem',
-              background: 'rgba(26, 26, 26, 0.5)',
-              padding: '0.5rem',
-              borderRadius: '8px'
+              marginBottom: '0.25rem'
             }}>
-              <button
-                onClick={() => handleZoom(false)}
-                style={{
-                  padding: '0.5rem',
-                  borderRadius: '8px',
-                  border: 'none',
-                  background: '#0aefff',
-                  color: 'white',
-                  cursor: 'pointer',
-                  width: '32px',
-                  height: '32px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '1.2rem',
-                  fontWeight: 'bold'
-                }}
-              >
-                -
-              </button>
-              <button
-                onClick={() => handleZoom(true)}
-                style={{
-                  padding: '0.5rem',
-                  borderRadius: '8px',
-                  border: 'none',
-                  background: '#0aefff',
-                  color: 'white',
-                  cursor: 'pointer',
-                  width: '32px',
-                  height: '32px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '1.2rem',
-                  fontWeight: 'bold'
-                }}
-              >
-                +
-              </button>
+              <span style={{ 
+                color: '#90e0ef',
+                fontSize: '1rem',
+                fontWeight: '500'
+              }}>Generation</span>
+              <span style={{ 
+                color: '#06d6a0',
+                fontSize: '1.2rem',
+                fontWeight: '600',
+                fontFamily: 'monospace'
+              }}>{generation}</span>
             </div>
-            <button
-              onClick={handleLogout}
-              style={{
-                padding: '0.5rem 1rem',
-                borderRadius: '8px',
-                border: 'none',
-                background: '#ff686b',
-                color: 'white',
-                cursor: 'pointer',
-                flexShrink: 0
-              }}
-            >
-              Logout
-            </button>
+            <div style={{ 
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem'
+            }}>
+              <span style={{ 
+                color: '#90e0ef',
+                fontSize: '1rem',
+                fontWeight: '500'
+              }}>Population</span>
+              <span style={{ 
+                color: '#06d6a0',
+                fontSize: '1.2rem',
+                fontWeight: '600',
+                fontFamily: 'monospace'
+              }}>{population}</span>
+            </div>
           </div>
+          <button
+            onClick={handleLogout}
+            style={{
+              padding: '0.5rem 1rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: '#ff686b',
+              color: 'white',
+              cursor: 'pointer',
+              height: 'fit-content',
+              alignSelf: 'center'
+            }}
+          >
+            Logout
+          </button>
         </div>
 
         <div 
@@ -659,8 +657,10 @@ export default function Game() {
             flex: 1,
             position: 'relative',
             overflow: 'hidden',
-            marginBottom: '1.5rem',
-            background: '#1a1a1a'
+            marginBottom: '0.75rem',
+            background: '#1a1a1a',
+            borderRadius: '12px',
+            minHeight: 0
           }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
@@ -680,11 +680,51 @@ export default function Game() {
           gap: '1rem',
           justifyContent: 'center',
           flexWrap: 'wrap',
-          padding: '1rem',
+          padding: '0.75rem',
           background: 'rgba(26, 26, 26, 0.5)',
           borderRadius: '12px',
-          marginBottom: '2rem'
+          marginBottom: '0'
         }}>
+          <button
+            onClick={() => handleZoom(false)}
+            style={{
+              padding: '0.5rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: '#0aefff',
+              color: 'white',
+              cursor: 'pointer',
+              width: '32px',
+              height: '32px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.2rem',
+              fontWeight: 'bold'
+            }}
+          >
+            -
+          </button>
+          <button
+            onClick={() => handleZoom(true)}
+            style={{
+              padding: '0.5rem',
+              borderRadius: '8px',
+              border: 'none',
+              background: '#0aefff',
+              color: 'white',
+              cursor: 'pointer',
+              width: '32px',
+              height: '32px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '1.2rem',
+              fontWeight: 'bold'
+            }}
+          >
+            +
+          </button>
           <button
             onClick={() => {
               setIsRunning(!isRunning);
