@@ -164,7 +164,7 @@ export default function Game() {
 
   const handleMouseDown = (e) => {
     if (e.button === 0) { // Left click
-      setIsDragging(false);
+      setIsDragging(false); // Start as not dragging
       setDragStart({
         x: e.clientX - position.x,
         y: e.clientY - position.y
@@ -176,19 +176,22 @@ export default function Game() {
   const handleMouseMove = useCallback((e) => {
     if (dragStart.x === 0 && dragStart.y === 0) return;
     
-    const dx = e.clientX - dragStart.x;
-    const dy = e.clientY - dragStart.y;
+    const newX = e.clientX - dragStart.x;
+    const newY = e.clientY - dragStart.y;
+    const dx = newX - position.x;
+    const dy = newY - position.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
-    setDragDistance(distance);
     
-    if (distance > 5) { // 5px threshold before considering it a drag
+    // Only start dragging after moving a certain distance
+    if (distance > 5) {
       setIsDragging(true);
       setPosition({
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y
+        x: newX,
+        y: newY
       });
     }
-  }, [dragStart, position]);
+    setDragDistance(distance);
+  }, [isDragging, dragStart, position]);
 
   const handleMouseUp = (e) => {
     // Only activate cell if we never started dragging
@@ -200,16 +203,15 @@ export default function Game() {
       const containerHeight = containerRef.current.clientHeight;
       
       // Calculate relative position within the container
-      const relativeX = e.clientX - containerRect.left - (containerWidth / 2) - position.x;
-      const relativeY = e.clientY - containerRect.top - (containerHeight / 2) - position.y;
+      const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
+      const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
       
-      // Calculate cell coordinates
-      const col = Math.floor(relativeX / cellSize);
-      const row = Math.floor(relativeY / cellSize);
+      // Calculate cell coordinates based on position and cell size
+      const col = Math.floor((relativeX - position.x) / cellSize);
+      const row = Math.floor((relativeY - position.y) / cellSize);
       
-      const wrappedRow = ((row % gridSize.rows) + gridSize.rows) % gridSize.rows;
-      const wrappedCol = ((col % gridSize.cols) + gridSize.cols) % gridSize.cols;
-      toggleCell(wrappedRow, wrappedCol);
+      // No need to wrap coordinates since we want an infinite grid
+      toggleCell(row, col);
     }
     
     setIsDragging(false);
@@ -254,13 +256,13 @@ export default function Game() {
     const containerWidth = containerRef.current.clientWidth;
     const containerHeight = containerRef.current.clientHeight;
     
-    // Calculate cells needed to fill the container
-    const colsNeeded = Math.ceil(containerWidth / cellSize) + 2;
-    const rowsNeeded = Math.ceil(containerHeight / cellSize) + 2;
+    // Calculate cells needed to fill the container plus some padding
+    const colsNeeded = Math.ceil(containerWidth / cellSize) + 4;
+    const rowsNeeded = Math.ceil(containerHeight / cellSize) + 4;
     
-    // Calculate center position
-    const centerX = -positionRef.current.x / cellSize;
-    const centerY = -positionRef.current.y / cellSize;
+    // Calculate center position in cell coordinates
+    const centerX = -position.x / cellSize;
+    const centerY = -position.y / cellSize;
     
     return {
       startRow: Math.floor(centerY - rowsNeeded/2),
@@ -268,7 +270,8 @@ export default function Game() {
       startCol: Math.floor(centerX - colsNeeded/2),
       endCol: Math.ceil(centerX + colsNeeded/2)
     };
-  }, [cellSize, positionRef]);
+  }, [cellSize, position]);
+
   const renderGrid = useCallback(() => {
     const { startRow, endRow, startCol, endCol } = getVisibleCells();
     const cells = [];
@@ -278,11 +281,18 @@ export default function Game() {
     const containerWidth = containerRef.current.clientWidth;
     const containerHeight = containerRef.current.clientHeight;
 
-    for (let row = startRow; row < endRow; row++) {
-      for (let col = startCol; col < endCol; col++) {
+    // Calculate visible area with padding
+    const padding = 5; // Add some padding cells
+    const visibleStartRow = startRow - padding;
+    const visibleEndRow = endRow + padding;
+    const visibleStartCol = startCol - padding;
+    const visibleEndCol = endCol + padding;
+
+    for (let row = visibleStartRow; row < visibleEndRow; row++) {
+      for (let col = visibleStartCol; col < visibleEndCol; col++) {
         const key = getCellKey(row, col);
-        const x = (col * cellSize) + positionRef.current.x + (containerWidth / 2);
-        const y = (row * cellSize) + positionRef.current.y + (containerHeight / 2);
+        const x = (col * cellSize) + position.x + (containerWidth / 2);
+        const y = (row * cellSize) + position.y + (containerHeight / 2);
 
         cells.push(
           <div
@@ -297,14 +307,15 @@ export default function Game() {
               left: x,
               top: y,
               willChange: 'transform',
-              transform: 'translate3d(0,0,0)'
+              transform: 'translate3d(0,0,0)',
+              pointerEvents: isDragging ? 'none' : 'auto'
             }}
           />
         );
       }
     }
     return cells;
-  }, [cellSize, grid, isDragging, getVisibleCells, positionRef.current]);
+  }, [cellSize, grid, isDragging, getVisibleCells, position]);
 
   // Center grid on mount and cell size change
   useEffect(() => {
@@ -456,14 +467,14 @@ export default function Game() {
     });
   };
 
-  const handleZoom = (zoomIn) => {
+  const handleZoom = useCallback((zoomIn) => {
     setCellSize(prevSize => {
       const newSize = zoomIn ? 
         Math.min(prevSize + 5, MAX_CELL_SIZE) : 
         Math.max(prevSize - 5, MIN_CELL_SIZE);
       return newSize;
     });
-  };
+  }, []);
 
   if (!user) {
     navigate('/login');
