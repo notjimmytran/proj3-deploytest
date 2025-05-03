@@ -5,7 +5,14 @@ import {
   endSession, 
   saveGameState, 
   loadGameState 
-} from '../services/gameservice'; // Update your import with the new functions
+} from '../services/gameservice';
+
+import { 
+  savePattern, 
+  listPatterns, 
+  getPattern, 
+  deletePattern 
+} from '../services/patternservice';
 
 // Add throttle utility at the top
 const throttle = (func, limit) => {
@@ -86,12 +93,19 @@ export default function Game() {
   const [isRunning, setIsRunning] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [population, setPopulation] = useState(0);
-  // Changed default to false - AutoSave disabled by default
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
   const [sessionId, setSessionId] = useState(null);
-  // Add states for UI feedback
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState(null);
+
+  // Pattern management states
+  const [savedPatterns, setSavedPatterns] = useState([]);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [patternName, setPatternName] = useState('');
+  const [showPatternMenu, setShowPatternMenu] = useState(false);
+  const [isSavingPattern, setIsSavingPattern] = useState(false);
+  const [isLoadingPattern, setIsLoadingPattern] = useState(false);
+  const [isLoadingPatternList, setIsLoadingPatternList] = useState(false);
 
   const runningRef = useRef(isRunning);
   runningRef.current = isRunning;
@@ -100,14 +114,12 @@ export default function Game() {
   const gridRef = useRef(grid);
   gridRef.current = grid;
   const rafRef = useRef(null);
-  // Session tracking refs
   const generationRef = useRef(generation);
   generationRef.current = generation;
   const populationRef = useRef(population);
   populationRef.current = population;
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
-  // Message timeout ref
   const messageTimeoutRef = useRef(null);
 
   // Pre-calculate container dimensions
@@ -138,31 +150,13 @@ export default function Game() {
     pointerEvents: isDragging ? 'none' : 'auto'
   }), []);
 
-  // Add a function to calculate pattern bounds (kept for potential future use, e.g., centering)
-  /* // Comment out the unused function
-  const getPatternBounds = useCallback(() => {
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const [key] of gridRef.current) { // Use ref here to avoid dependency
-      const [row, col] = key.split(',').map(Number);
-      minX = Math.min(minX, col);
-      maxX = Math.max(maxX, col);
-      minY = Math.min(minY, row);
-      maxY = Math.max(maxY, row);
-    }
-    return { minX, maxX, minY, maxY };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  */
-  // Note: getPatternBounds is kept for potential future use (e.g., centering patterns)
-
   const getVisibleCells = useCallback(() => {
     const { width, height } = containerDimensions();
     if (!width || !height) return { startRow: 0, endRow: 0, startCol: 0, endCol: 0 };
 
-    // Calculate cells needed to fill the container plus some padding
     const colsNeeded = Math.ceil(width / cellSize) + 4;
     const rowsNeeded = Math.ceil(height / cellSize) + 4;
 
-    // Calculate center position in cell coordinates using the ref for stability
     const currentPosition = positionRef.current;
     const centerX = -currentPosition.x / cellSize;
     const centerY = -currentPosition.y / cellSize;
@@ -173,7 +167,7 @@ export default function Game() {
       startCol: Math.floor(centerX - colsNeeded/2),
       endCol: Math.ceil(centerX + colsNeeded/2)
     };
-  }, [cellSize, containerDimensions]); // positionRef is stable, no need to include position state
+  }, [cellSize, containerDimensions]);
 
   const toggleCell = useCallback((row, col) => {
     const key = getCellKey(row, col);
@@ -184,7 +178,6 @@ export default function Game() {
       } else {
         newGrid.set(key, true);
       }
-      // Update population immediately after toggling
       setPopulation(newGrid.size);
       return newGrid;
     });
@@ -193,38 +186,137 @@ export default function Game() {
   // Helper function to show temporary messages
   const showMessage = (text, type = 'success') => {
     setMessage({ text, type });
-    
-    // Clear any existing timeout
     if (messageTimeoutRef.current) {
       clearTimeout(messageTimeoutRef.current);
     }
-    
-    // Set new timeout to clear the message after 5 seconds
     messageTimeoutRef.current = setTimeout(() => {
       setMessage(null);
       messageTimeoutRef.current = null;
     }, 5000);
   };
 
+  // Pattern management functions
+  const loadSavedPatterns = useCallback(async () => {
+    if (!user?.id) return;
+    setIsLoadingPatternList(true);
+    try {
+      const response = await listPatterns();
+      if (response.success) {
+        setSavedPatterns(response.patterns);
+      } else {
+        showMessage(response.error || 'Failed to load saved patterns', 'error');
+      }
+    } catch (error) {
+      console.error('Error loading patterns:', error);
+      showMessage('Error loading patterns', 'error');
+    } finally {
+      setIsLoadingPatternList(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (user?.id) {
+      loadSavedPatterns();
+    }
+  }, [user?.id, loadSavedPatterns]);
+
+  const handleSavePattern = async () => {
+    if (!user?.id || !patternName.trim()) return;
+    setIsSavingPattern(true);
+    try {
+      const gridArray = Array.from(grid.keys());
+      const response = await savePattern(patternName.trim(), gridArray);
+      if (response.success) {
+        showMessage(response.message || 'Pattern saved successfully!');
+        setPatternName('');
+        setShowSaveModal(false);
+        loadSavedPatterns();
+      } else {
+        showMessage(response.error || 'Failed to save pattern', 'error');
+      }
+    } catch (error) {
+      console.error('Error saving pattern:', error);
+      showMessage('Error saving pattern', 'error');
+    } finally {
+      setIsSavingPattern(false);
+    }
+  };
+
+  const handleLoadPattern = async (patternId) => {
+    setIsLoadingPattern(true);
+    try {
+      const response = await getPattern(patternId);
+      if (response.success) {
+        const patternGrid = new Map();
+        response.pattern.pattern_data.forEach(key => patternGrid.set(key, true));
+        setGrid(patternGrid);
+        setGeneration(0);
+        setPopulation(patternGrid.size);
+        showMessage(`Pattern "${response.pattern.name}" loaded successfully!`);
+        setShowPatternMenu(false);
+      } else {
+        showMessage(response.error || 'Failed to load pattern', 'error');
+      }
+    } catch (error) {
+      console.error('Error loading pattern:', error);
+      showMessage('Error loading pattern', 'error');
+    } finally {
+      setIsLoadingPattern(false);
+    }
+  };
+
+  const handleDeletePattern = async (patternId, event) => {
+    event.stopPropagation();
+    if (!window.confirm('Are you sure you want to delete this pattern?')) return;
+    try {
+      const response = await deletePattern(patternId);
+      if (response.success) {
+        showMessage(response.message || 'Pattern deleted successfully!');
+        loadSavedPatterns();
+      } else {
+        showMessage(response.error || 'Failed to delete pattern', 'error');
+      }
+    } catch (error) {
+      console.error('Error deleting pattern:', error);
+      showMessage('Error deleting pattern', 'error');
+    }
+  };
+
+  // Close pattern menu when clicking outside
+  useEffect(() => {
+    if (!showPatternMenu) return;
+    const handleClickOutside = (event) => {
+      const menu = document.getElementById('pattern-menu');
+      const button = document.getElementById('pattern-menu-button');
+      if (
+        menu && 
+        !menu.contains(event.target) &&
+        button && 
+        !button.contains(event.target)
+      ) {
+        setShowPatternMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showPatternMenu]);
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleMouseMove = useCallback(
     throttle((e) => {
       if (dragStart.x === 0 && dragStart.y === 0) return;
-
       const newX = e.clientX - dragStart.x;
       const newY = e.clientY - dragStart.y;
-      const currentPosition = positionRef.current; // Use ref for comparison
+      const currentPosition = positionRef.current;
       const dx = newX - currentPosition.x;
       const dy = newY - currentPosition.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
-
-      // Only start dragging after moving a certain distance
       if (!isDragging && distance > 5) {
         setIsDragging(true);
       }
-
-      if (isDragging) { // Only update position if dragging
-        // Use RAF for smoother position updates
+      if (isDragging) {
         if (rafRef.current) {
           cancelAnimationFrame(rafRef.current);
         }
@@ -237,64 +329,49 @@ export default function Game() {
         });
       }
       setDragDistance(distance);
-    }, 16), [dragStart, isDragging]); // Throttle limit 16ms (~60fps), dependencies are dragStart and isDragging
+    }, 16), [dragStart, isDragging]);
 
   const renderGrid = useCallback(() => {
     const { startRow, endRow, startCol, endCol } = getVisibleCells();
     const cells = [];
-
     if (!containerRef.current) return cells;
-
     const containerWidth = containerRef.current.clientWidth;
     const containerHeight = containerRef.current.clientHeight;
-
-    // Calculate visible area with padding
-    const padding = 5; // Add some padding cells
+    const padding = 5;
     const visibleStartRow = startRow - padding;
     const visibleEndRow = endRow + padding;
     const visibleStartCol = startCol - padding;
     const visibleEndCol = endCol + padding;
-
-    // Pre-calculate common values using refs for stability
     const halfContainerWidth = containerWidth / 2;
     const halfContainerHeight = containerHeight / 2;
     const currentPosition = positionRef.current;
     const currentGrid = gridRef.current;
-    const currentCellSize = cellSize; // Capture cellSize for this render pass
-
+    const currentCellSize = cellSize;
     for (let row = visibleStartRow; row < visibleEndRow; row++) {
       for (let col = visibleStartCol; col < visibleEndCol; col++) {
         const key = getCellKey(row, col);
         const x = (col * currentCellSize) + currentPosition.x + halfContainerWidth;
         const y = (row * currentCellSize) + currentPosition.y + halfContainerHeight;
-
-        // Skip cells that would be outside the viewport
         if (x < -currentCellSize || x > containerWidth + currentCellSize ||
             y < -currentCellSize || y > containerHeight + currentCellSize) {
           continue;
         }
-
         cells.push(
           <div
             key={key}
-            // Intentionally not adding onClick here to avoid performance issues with many cells
-            // Click handling is done on the container
             style={getCellStyle(x, y, currentGrid.has(key), currentCellSize, isDragging)}
           />
         );
       }
     }
     return cells;
-  }, [cellSize, isDragging, getVisibleCells, getCellStyle, getCellKey]); // Dependencies are correct
+  }, [cellSize, isDragging, getVisibleCells, getCellStyle, getCellKey]);
 
-  // Cleanup RAF on unmount
   useEffect(() => {
     return () => {
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
       }
-      
-      // Also clear any message timeout
       if (messageTimeoutRef.current) {
         clearTimeout(messageTimeoutRef.current);
       }
@@ -303,17 +380,12 @@ export default function Game() {
 
   const runSimulation = useCallback(() => {
     if (!runningRef.current) return;
-
     setGrid(g => {
       const newGrid = new Map();
       const activeCells = new Set();
-
-      // Collect all active cells and their neighbors
       for (const [key] of g) {
         const [row, col] = key.split(',').map(Number);
         activeCells.add(key);
-
-        // Add all neighbors to check
         for (let i = -1; i <= 1; i++) {
           for (let j = -1; j <= 1; j++) {
             if (i === 0 && j === 0) continue;
@@ -322,13 +394,9 @@ export default function Game() {
           }
         }
       }
-
-      // Check each cell that needs updating
       for (const key of activeCells) {
         const [row, col] = key.split(',').map(Number);
         let neighbors = 0;
-
-        // Count neighbors
         for (let i = -1; i <= 1; i++) {
           for (let j = -1; j <= 1; j++) {
             if (i === 0 && j === 0) continue;
@@ -336,8 +404,6 @@ export default function Game() {
             if (g.has(neighborKey)) neighbors++;
           }
         }
-
-        // Apply Game of Life rules
         const isAlive = g.has(key);
         if (isAlive && (neighbors === 2 || neighbors === 3)) {
           newGrid.set(key, true);
@@ -345,81 +411,54 @@ export default function Game() {
           newGrid.set(key, true);
         }
       }
-
-      // Update population state after calculating the new grid
       setPopulation(newGrid.size);
       return newGrid;
     });
-
     setGeneration(g => g + 1);
-
-    // Use setTimeout for the next step
     setTimeout(runSimulation, 100);
-  }, [getCellKey]); // Removed setPopulation from here as it's handled within setGrid
+  }, [getCellKey]);
 
   const handleMouseDown = (e) => {
-    if (e.button === 0) { // Left click
-      setIsDragging(false); // Reset dragging state
+    if (e.button === 0) {
+      setIsDragging(false);
       setDragStart({
-        x: e.clientX - positionRef.current.x, // Use ref for initial position
+        x: e.clientX - positionRef.current.x,
         y: e.clientY - positionRef.current.y
       });
-      setDragDistance(0); // Reset drag distance
-      // Add mousemove listener to the window for smoother dragging
+      setDragDistance(0);
       window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUpGlobal, { once: true }); // Use once to auto-remove
+      window.addEventListener('mouseup', handleMouseUpGlobal, { once: true });
     }
   };
 
-  // Separate mouse up handler for global listener
   const handleMouseUpGlobal = useCallback((e) => {
-    window.removeEventListener('mousemove', handleMouseMove); // Clean up listener
-
-    // Only toggle cell if it was a click (not a drag)
+    window.removeEventListener('mousemove', handleMouseMove);
     if (!isDragging && dragDistance <= 5) {
       if (!containerRef.current) return;
-
       const containerRect = containerRef.current.getBoundingClientRect();
       const containerWidth = containerRef.current.clientWidth;
       const containerHeight = containerRef.current.clientHeight;
-
-      // Calculate relative position within the container
       const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
       const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
-
-      // Calculate cell coordinates based on position and cell size
-      const col = Math.floor((relativeX - positionRef.current.x) / cellSize); // Use ref
-      const row = Math.floor((relativeY - positionRef.current.y) / cellSize); // Use ref
-
+      const col = Math.floor((relativeX - positionRef.current.x) / cellSize);
+      const row = Math.floor((relativeY - positionRef.current.y) / cellSize);
       toggleCell(row, col);
     }
-
-    // Reset dragging state regardless
     setIsDragging(false);
-    setDragStart({ x: 0, y: 0 }); // Reset drag start
+    setDragStart({ x: 0, y: 0 });
     setDragDistance(0);
-  }, [isDragging, dragDistance, cellSize, toggleCell, handleMouseMove]); // Added handleMouseMove to dependencies
+  }, [isDragging, dragDistance, cellSize, toggleCell, handleMouseMove]);
 
   const loadPattern = useCallback((patternName) => {
     if (!patternName || !containerRef.current) return;
-
     const patternData = PATTERNS[patternName];
     if (!patternData) return;
-
     const pattern = patternData.pattern;
     const newGrid = new Map();
-
-
-
-    // Calculate pattern dimensions
     const patternHeight = pattern.length;
     const patternWidth = pattern[0].length;
-
-    // Calculate center offset for the pattern
     const startRow = -Math.floor(patternHeight / 2);
     const startCol = -Math.floor(patternWidth / 2);
-
-    // Place pattern relative to (0,0)
     for (let i = 0; i < patternHeight; i++) {
       for (let j = 0; j < patternWidth; j++) {
         if (pattern[i][j] === 1) {
@@ -427,104 +466,75 @@ export default function Game() {
         }
       }
     }
-
     setGrid(newGrid);
     setGeneration(0);
     setPopulation(newGrid.size);
-
-    // Center the view on the pattern's approximate center (0,0 in grid coordinates)
     setPosition({
       x: 0,
       y: 0
     });
-  }, [getCellKey]); // Removed cellSize dependency
+  }, [getCellKey]);
 
-  // Center grid view initially & Start Session
   useEffect(() => {
-    // Center view
     if (containerRef.current) {
       setPosition({
-        x: 0, // Start at (0,0) in grid coordinates for a cleaner initial view
+        x: 0,
         y: 0
       });
     }
-
-    // Start game session if user is logged in
     if (user?.id) {
-      console.log("Attempting to start session for user:", user.id);
       startSession().then(response => {
         if (response.success && response.sessionId) {
-          console.log("Session started successfully, ID:", response.sessionId);
           setSessionId(response.sessionId);
         } else {
-          console.error("Failed to start session:", response.error);
           showMessage("Failed to start session: " + (response.error || "Unknown error"), "error");
         }
       }).catch(error => {
-         console.error("Error calling startSession:", error);
          showMessage("Network error starting session", "error");
       });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]); // Run only when user ID changes (effectively on mount for a logged-in user)
+  }, [user?.id]);
 
-  // End Session on Unmount
   useEffect(() => {
-    // Return a cleanup function that will be called when the component unmounts
     return () => {
-      // Use the ref here to get the latest sessionId
       const currentSessionId = sessionIdRef.current;
       if (currentSessionId && user?.id) {
-        console.log(`Ending session ${currentSessionId} on unmount.`);
-        // Use refs for generation and population to get the latest values
         endSession(currentSessionId, generationRef.current, populationRef.current)
           .then(response => {
-            if (response.success) {
-              console.log(`Session ${currentSessionId} ended successfully.`);
-            } else {
-              console.error(`Failed to end session ${currentSessionId}:`, response.error);
-            }
+            // Optionally handle response
           }).catch(error => {
-             console.error(`Error calling endSession for ${currentSessionId}:`, error);
+             // Optionally handle error
           });
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]); // Depend only on user.id to set up/tear down the effect correctly
+  }, [user?.id]);
 
   const handleZoom = useCallback((zoomIn) => {
     setCellSize(prevSize => {
       const newSize = zoomIn ?
         Math.min(prevSize + 5, MAX_CELL_SIZE) :
         Math.max(prevSize - 5, MIN_CELL_SIZE);
-
-      if (newSize === prevSize) return prevSize; // No change
-
+      if (newSize === prevSize) return prevSize;
       if (containerRef.current) {
         const containerWidth = containerRef.current.clientWidth;
         const containerHeight = containerRef.current.clientHeight;
-
-        // Calculate the grid coordinate at the center of the viewport BEFORE zoom
         const viewCenterX = (containerWidth / 2 - positionRef.current.x) / prevSize;
         const viewCenterY = (containerHeight / 2 - positionRef.current.y) / prevSize;
-
-        // Calculate the new position to keep the same grid coordinate at the center AFTER zoom
         const newX = containerWidth / 2 - viewCenterX * newSize;
         const newY = containerHeight / 2 - viewCenterY * newSize;
-
         setPosition({ x: newX, y: newY });
       }
-
       return newSize;
     });
-  }, []); // Removed dependencies as refs are used and setPosition updates positionRef
+  }, []);
 
   const resetGrid = () => {
     setGrid(new Map());
     setGeneration(0);
     setIsRunning(false);
     setPopulation(0);
-    // Reset position to (0,0) in grid coordinates
     if (containerRef.current) {
       setPosition({ x: 0, y: 0 });
     }
@@ -532,7 +542,6 @@ export default function Game() {
   };
 
   const handleNextGeneration = useCallback(() => {
-    // This function essentially performs one step of runSimulation
     setGrid(g => {
       const newGrid = new Map();
       const activeCells = new Set();
@@ -560,21 +569,19 @@ export default function Game() {
           newGrid.set(key, true);
         }
       }
-      setPopulation(newGrid.size); // Update population
+      setPopulation(newGrid.size);
       return newGrid;
     });
     setGeneration(g => g + 1);
-  }, [getCellKey]); // Removed setPopulation dependency
+  }, [getCellKey]);
 
   const advance23Generations = useCallback(() => {
-    const wasRunning = runningRef.current; // Use ref
+    const wasRunning = runningRef.current;
     if (wasRunning) {
-      setIsRunning(false); // This will update runningRef.current via its useEffect
+      setIsRunning(false);
     }
-
     let currentStep = 0;
     const stepInterval = 60;
-
     const advanceStep = () => {
       if (currentStep < 23) {
         handleNextGeneration();
@@ -582,34 +589,25 @@ export default function Game() {
         setTimeout(advanceStep, stepInterval);
       } else {
         if (wasRunning) {
-          setIsRunning(true); // This will update runningRef.current and trigger runSimulation
+          setIsRunning(true);
         }
       }
     };
-
     advanceStep();
-  }, [handleNextGeneration]); // Removed isRunning and runSimulation dependencies
+  }, [handleNextGeneration]);
 
-  // Save state to server
   const handleSaveState = async () => {
     if (!user?.id) return;
-    
     setIsLoading(true);
     setMessage(null);
-    
     try {
-      // Convert grid Map to array for easier storage
       const gridArray = Array.from(grid.keys());
-      
-      // Create state object with all necessary data
       const gameState = {
         grid: gridArray,
         position,
         cellSize
       };
-      
       const response = await saveGameState(gameState, generation, population);
-      
       if (response.success) {
         showMessage('Game state saved successfully!', 'success');
       } else {
@@ -623,31 +621,21 @@ export default function Game() {
     }
   };
 
-  // Load state from server
   const handleLoadState = async () => {
     if (!user?.id) return;
-    
     setIsLoading(true);
     setMessage(null);
-    
     try {
       const response = await loadGameState();
-      
       if (response.success && response.state) {
-        // Parse the saved state
         const savedState = JSON.parse(response.state);
-        
-        // Restore grid
         const restoredGrid = new Map();
         savedState.grid.forEach(key => restoredGrid.set(key, true));
-        
-        // Restore all state
         setGrid(restoredGrid);
         setPosition(savedState.position);
         setCellSize(savedState.cellSize);
         setGeneration(response.generations || 0);
         setPopulation(restoredGrid.size);
-        
         showMessage('Game state loaded successfully!', 'success');
       } else {
         showMessage(response.message || 'No saved state found.', 'info');
@@ -660,25 +648,15 @@ export default function Game() {
     }
   };
 
-  // REMOVED the localStorage auto-load effect since we want to start with an empty board
-
-  // Server auto-save effect (only if enabled)
   useEffect(() => {
     if (!autoSaveEnabled || !user?.id || grid.size === 0) return;
-    
-    // Use debounce to avoid excessive calls to the server
     const handler = setTimeout(() => {
-      // Convert grid Map to array for easier storage
       const gridArray = Array.from(grid.keys());
-      
-      // Create state object with necessary data
       const gameState = {
         grid: gridArray,
         position,
         cellSize
       };
-      
-      // Call the server-side save function
       saveGameState(gameState, generation, population)
         .then(response => {
           if (!response.success) {
@@ -688,51 +666,35 @@ export default function Game() {
         .catch(error => {
           console.error('Auto-save error:', error);
         });
-    }, 2000); // Longer debounce (2 seconds) for server calls
-    
+    }, 2000);
     return () => clearTimeout(handler);
   }, [grid, generation, position, cellSize, user?.id, autoSaveEnabled, population]);
 
-  // Effect to start/stop simulation when isRunning changes
   useEffect(() => {
     if (isRunning) {
       runningRef.current = true;
       runSimulation();
     } else {
       runningRef.current = false;
-      // No need to explicitly stop timeout here, runSimulation checks runningRef.current
     }
   }, [isRunning, runSimulation]);
 
   if (!user) {
     navigate('/login');
-    return null; // Render nothing while redirecting
+    return null;
   }
 
-  // Modified handleLogout to end session
   const handleLogout = async () => {
-    // End the current session before logging out
     if (sessionId && user?.id) {
-      console.log(`Ending session ${sessionId} on logout.`);
       try {
-        const response = await endSession(sessionId, generation, population);
-        if (response.success) {
-          console.log(`Session ${sessionId} ended successfully before logout.`);
-        } else {
-          console.error(`Failed to end session ${sessionId} before logout:`, response.error);
-        }
-      } catch (error) {
-         console.error(`Error calling endSession for ${sessionId} during logout:`, error);
-      }
+        await endSession(sessionId, generation, population);
+      } catch (error) {}
     }
-
-    // Proceed with logout
     localStorage.removeItem('user');
     setSessionId(null);
     navigate('/login');
   };
 
-  // Define a base button style to avoid repetition
   const controlButtonStyle = {
     padding: '0.5rem 1rem',
     borderRadius: '8px',
@@ -756,7 +718,6 @@ export default function Game() {
       overflow: 'hidden',
       boxSizing: 'border-box'
     }}>
-      {/* Main container */}
       <div style={{
         maxWidth: '1200px',
         margin: '0 auto',
@@ -766,7 +727,6 @@ export default function Game() {
         flexDirection: 'column',
         boxSizing: 'border-box'
       }}>
-        {/* Header: Stats and Logout */}
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
@@ -775,7 +735,6 @@ export default function Game() {
           flexShrink: 0,
           gap: '1rem'
         }}>
-          {/* Stats Box */}
           <div style={{
             background: 'rgba(26, 26, 26, 0.6)',
             padding: '0.75rem 1.25rem',
@@ -786,7 +745,6 @@ export default function Game() {
             display: 'flex',
             gap: '1.5rem'
           }}>
-            {/* Generation */}
             <div style={{ textAlign: 'center' }}>
               <span style={{
                 color: '#90e0ef',
@@ -802,7 +760,6 @@ export default function Game() {
                 fontFamily: 'monospace'
               }}>{generation}</span>
             </div>
-            {/* Population */}
             <div style={{ textAlign: 'center' }}>
               <span style={{
                 color: '#90e0ef',
@@ -819,8 +776,6 @@ export default function Game() {
               }}>{population}</span>
             </div>
           </div>
-          
-          {/* Message display */}
           {message && (
             <div style={{
               background: message.type === 'error' ? 'rgba(255, 104, 107, 0.2)' : 
@@ -839,8 +794,6 @@ export default function Game() {
               {message.text}
             </div>
           )}
-          
-          {/* Logout Button */}
           <button
             onClick={handleLogout}
             style={{
@@ -855,8 +808,6 @@ export default function Game() {
             Logout
           </button>
         </div>
-
-        {/* Game Grid Container */}
         <div
           ref={containerRef}
           style={{
@@ -872,7 +823,6 @@ export default function Game() {
           }}
           onMouseDown={handleMouseDown}
         >
-          {/* Rendered Grid Cells */}
           <div style={{
             position: 'absolute',
             width: '100%',
@@ -883,8 +833,6 @@ export default function Game() {
             {renderGrid()}
           </div>
         </div>
-
-        {/* Controls Bar */}
         <div style={{
           display: 'flex',
           gap: '0.75rem',
@@ -899,7 +847,6 @@ export default function Game() {
           boxShadow: '0 4px 15px rgba(0, 0, 0, 0.2)',
           flexShrink: 0
         }}>
-          {/* Zoom Buttons */}
           <button
             onClick={() => handleZoom(false)}
             style={{
@@ -942,8 +889,6 @@ export default function Game() {
           >
             +
           </button>
-
-          {/* Start/Stop Button */}
           <button
             onClick={() => setIsRunning(!isRunning)}
             style={{
@@ -956,8 +901,6 @@ export default function Game() {
           >
             {isRunning ? 'Stop' : 'Start'}
           </button>
-
-          {/* Next Generation Button */}
           <button
             onClick={handleNextGeneration}
             disabled={isRunning}
@@ -974,8 +917,6 @@ export default function Game() {
           >
             Next Gen
           </button>
-
-          {/* +23 Generations Button */}
           <button
             onClick={advance23Generations}
             disabled={isRunning}
@@ -992,8 +933,6 @@ export default function Game() {
           >
             +23 Gens
           </button>
-
-          {/* Reset Button */}
           <button
             onClick={resetGrid}
             style={{
@@ -1006,8 +945,6 @@ export default function Game() {
           >
             Reset
           </button>
-
-          {/* Auto-Save Toggle Button - Default to OFF */}
           <button
             onClick={() => setAutoSaveEnabled(!autoSaveEnabled)}
             style={{
@@ -1020,8 +957,6 @@ export default function Game() {
           >
             {autoSaveEnabled ? 'AutoSave: ON' : 'AutoSave: OFF'}
           </button>
-
-          {/* Server Save Button */}
           <button
             onClick={handleSaveState}
             disabled={isLoading}
@@ -1038,8 +973,6 @@ export default function Game() {
           >
             {isLoading ? 'Saving...' : 'Save Game'}
           </button>
-
-          {/* Server Load Button */}
           <button
             onClick={handleLoadState}
             disabled={isLoading}
@@ -1056,8 +989,6 @@ export default function Game() {
           >
             {isLoading ? 'Loading...' : 'Load Last Game'}
           </button>
-
-          {/* Pattern Selector */}
           <select
             onChange={(e) => loadPattern(e.target.value)}
             defaultValue=""
@@ -1090,7 +1021,189 @@ export default function Game() {
               <option value="glider">Glider</option>
             </optgroup>
           </select>
+          {/* Custom Pattern Management Buttons */}
+          <button
+            onClick={() => setShowSaveModal(true)}
+            disabled={isSavingPattern || grid.size === 0}
+            style={{
+              ...controlButtonStyle,
+              background: '#f9c74f',
+              color: '#073b4c',
+              minWidth: '130px',
+              opacity: (isSavingPattern || grid.size === 0) ? 0.5 : 1,
+              cursor: (isSavingPattern || grid.size === 0) ? 'not-allowed' : 'pointer'
+            }}
+            onMouseOver={e => !(isSavingPattern || grid.size === 0) && (e.currentTarget.style.backgroundColor = '#f3b529')}
+            onMouseOut={e => !(isSavingPattern || grid.size === 0) && (e.currentTarget.style.backgroundColor = '#f9c74f')}
+          >
+            Save Pattern
+          </button>
+          <button
+            id="pattern-menu-button"
+            onClick={() => {
+              setShowPatternMenu(!showPatternMenu);
+              if (!showPatternMenu) loadSavedPatterns();
+            }}
+            disabled={isLoadingPatternList}
+            style={{
+              ...controlButtonStyle,
+              background: '#0aefff',
+              color: '#073b4c',
+              minWidth: '140px',
+              opacity: isLoadingPatternList ? 0.5 : 1,
+              cursor: isLoadingPatternList ? 'not-allowed' : 'pointer'
+            }}
+            onMouseOver={e => !isLoadingPatternList && (e.currentTarget.style.backgroundColor = '#00dcec')}
+            onMouseOut={e => !isLoadingPatternList && (e.currentTarget.style.backgroundColor = '#0aefff')}
+          >
+            My Patterns {showPatternMenu ? '▲' : '▼'}
+          </button>
         </div>
+        {/* Save Pattern Modal */}
+        {showSaveModal && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1000
+          }}>
+            <div style={{
+              backgroundColor: '#1a1a1a',
+              padding: '2rem',
+              borderRadius: '12px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
+              border: '1px solid rgba(255, 255, 255, 0.1)'
+            }}>
+              <h3 style={{ color: '#fff', marginTop: 0 }}>Save Current Pattern</h3>
+              <p style={{ color: '#90e0ef' }}>Give your pattern a name:</p>
+              <input
+                type="text"
+                value={patternName}
+                onChange={e => setPatternName(e.target.value)}
+                placeholder="My Custom Pattern"
+                style={{
+                  width: '100%',
+                  padding: '0.75rem',
+                  borderRadius: '8px',
+                  backgroundColor: '#2a2a2a',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  color: '#fff',
+                  fontSize: '1rem',
+                  marginBottom: '1.5rem'
+                }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
+                <button
+                  onClick={() => {
+                    setShowSaveModal(false);
+                    setPatternName('');
+                  }}
+                  style={{
+                    ...controlButtonStyle,
+                    background: '#2a2a2a',
+                    padding: '0.75rem 1.5rem'
+                  }}
+                  onMouseOver={e => e.currentTarget.style.backgroundColor = '#3a3a3a'}
+                  onMouseOut={e => e.currentTarget.style.backgroundColor = '#2a2a2a'}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSavePattern}
+                  disabled={!patternName.trim() || isSavingPattern}
+                  style={{
+                    ...controlButtonStyle,
+                    background: '#06d6a0',
+                    padding: '0.75rem 1.5rem',
+                    opacity: (!patternName.trim() || isSavingPattern) ? 0.5 : 1,
+                    cursor: (!patternName.trim() || isSavingPattern) ? 'not-allowed' : 'pointer'
+                  }}
+                  onMouseOver={e => patternName.trim() && !isSavingPattern && (e.currentTarget.style.backgroundColor = '#05b387')}
+                  onMouseOut={e => patternName.trim() && !isSavingPattern && (e.currentTarget.style.backgroundColor = '#06d6a0')}
+                >
+                  {isSavingPattern ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Pattern Library Menu */}
+        {showPatternMenu && (
+          <div
+            id="pattern-menu"
+            style={{
+              position: 'absolute',
+              width: '300px',
+              maxHeight: '400px',
+              overflowY: 'auto',
+              backgroundColor: '#1a1a1a',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '12px',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
+              zIndex: 100,
+              padding: '1rem',
+              right: '1rem',
+              top: 'calc(100% + 10px)',
+            }}>
+            <h3 style={{ color: '#fff', marginTop: 0 }}>My Saved Patterns</h3>
+            {isLoadingPatternList ? (
+              <p style={{ color: '#90e0ef', textAlign: 'center', padding: '1rem 0' }}>
+                Loading patterns...
+              </p>
+            ) : savedPatterns.length === 0 ? (
+              <p style={{ color: '#90e0ef', textAlign: 'center', padding: '1rem 0' }}>
+                You don't have any saved patterns yet.
+              </p>
+            ) : (
+              <ul style={{ listStyleType: 'none', padding: 0, margin: 0 }}>
+                {savedPatterns.map(pattern => (
+                  <li
+                    key={pattern.id}
+                    onClick={() => handleLoadPattern(pattern.id)}
+                    style={{
+                      padding: '0.75rem 1rem',
+                      borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                      color: '#fff',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      cursor: 'pointer',
+                      transition: 'background-color 0.2s ease'
+                    }}
+                    onMouseOver={e => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+                    onMouseOut={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                  >
+                    <span>{pattern.name}</span>
+                    <button
+                      onClick={(e) => handleDeletePattern(pattern.id, e)}
+                      style={{
+                        background: '#ff686b',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        padding: '0.25rem 0.5rem',
+                        fontSize: '0.8rem',
+                        cursor: 'pointer'
+                      }}
+                      onMouseOver={e => e.currentTarget.style.backgroundColor = '#e05558'}
+                      onMouseOut={e => e.currentTarget.style.backgroundColor = '#ff686b'}
+                    >
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
