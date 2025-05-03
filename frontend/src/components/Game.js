@@ -361,6 +361,56 @@ export default function Game() {
             clearTimeout(clickTimeoutRef.current);
             clickTimeoutRef.current = null;
           }
+        }
+      }
+    }, 16), [isPanning, isDragging, dragStart, panStart]);
+
+  // Mouse up handler: finish drag or toggle cell
+  const handleMouseUpGlobal = useCallback((e) => {
+    window.removeEventListener('mousemove', handleMouseMove);
+    if (!isDragging && dragDistance <= 5) {
+      if (!containerRef.current) return;
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const containerWidth = containerRef.current.clientWidth;
+      const containerHeight = containerRef.current.clientHeight;
+      const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
+      const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
+      const col = Math.floor((relativeX - positionRef.current.x) / cellSize);
+      const row = Math.floor((relativeY - positionRef.current.y) / cellSize);
+      toggleCell(row, col);
+    }
+    setIsDragging(false);
+    setDragStart({ x: 0, y: 0 });
+    setDragDistance(0);
+  }, [isDragging, dragDistance, cellSize, toggleCell, handleMouseMove]);
+
+  // Load a predefined pattern into the grid
+  const loadPattern = useCallback((patternName) => {
+    if (!patternName || !containerRef.current) return;
+    const patternData = PATTERNS[patternName];
+    if (!patternData) return;
+    const pattern = patternData.pattern;
+    const newGrid = new Map();
+    const patternHeight = pattern.length;
+    const patternWidth = pattern[0].length;
+    const startRow = -Math.floor(patternHeight / 2);
+    const startCol = -Math.floor(patternWidth / 2);
+    for (let i = 0; i < patternHeight; i++) {
+      for (let j = 0; j < patternWidth; j++) {
+        if (pattern[i][j] === 1) {
+          newGrid.set(getCellKey(startRow + i, startCol + j), true);
+        }
+      }
+    }
+    setGrid(newGrid);
+    setGeneration(0);
+    setPopulation(newGrid.size);
+    setPosition({
+      x: 0,
+      y: 0
+    });
+  }, [getCellKey]);
+
   // Load user's saved patterns from backend
   const loadSavedPatterns = useCallback(async () => {
     if (!user?.id) return;
@@ -473,94 +523,6 @@ export default function Game() {
     };
   }, [showPatternMenu]);
 
-  // Mouse move handler for dragging grid (throttled)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const handleMouseMove = useCallback(
-    throttle((e) => {
-      if (dragStart.x === 0 && dragStart.y === 0) return;
-      const newX = e.clientX - dragStart.x;
-      const newY = e.clientY - dragStart.y;
-      const currentPosition = positionRef.current;
-      const dx = newX - currentPosition.x;
-      const dy = newY - currentPosition.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      if (!isDragging && distance > 5) {
-        setIsDragging(true);
-      }
-      if (isDragging) {
-        if (rafRef.current) {
-          cancelAnimationFrame(rafRef.current);
-        }
-
-        if (isDragging) {
-          if (rafRef.current) {
-            cancelAnimationFrame(rafRef.current);
-          }
-          rafRef.current = requestAnimationFrame(() => {
-            positionRef.current = { x: newX, y: newY };
-            setGrid(prev => new Map(prev));
-            rafRef.current = null;
-          });
-        }
-        setDragDistance(distance);
-      }
-    }, 16), [isPanning, isDragging, dragStart, panStart]);
-
-  const handleMouseUpGlobal = useCallback((e) => {
-    window.removeEventListener('mousemove', handleMouseMove);
-    
-    if (isPanning) {
-      setIsPanning(false);
-      setPanStart({ x: 0, y: 0 });
-      document.body.style.cursor = 'default';
-    } else {
-      setIsDragging(false);
-      setDragStart({ x: 0, y: 0 });
-      setDragDistance(0);
-    }
-
-    // Clear any pending click timeout
-    if (clickTimeoutRef.current) {
-      clearTimeout(clickTimeoutRef.current);
-      clickTimeoutRef.current = null;
-    }
-  }, [isPanning, isDragging, handleMouseMove]);
-
-  const loadPattern = useCallback((patternName) => {
-    if (!patternName || !containerRef.current) return;
-
-    const patternData = PATTERNS[patternName];
-    if (!patternData) return;
-
-    const pattern = patternData.pattern;
-    const newGrid = new Map();
-
-    // Calculate pattern dimensions
-    const patternHeight = pattern.length;
-    const patternWidth = pattern[0].length;
-
-    // Calculate center offset for the pattern
-    const startRow = -Math.floor(patternHeight / 2);
-    const startCol = -Math.floor(patternWidth / 2);
-
-    // Place pattern relative to (0,0)
-    for (let i = 0; i < patternHeight; i++) {
-      for (let j = 0; j < patternWidth; j++) {
-        if (pattern[i][j] === 1) {
-          newGrid.set(getCellKey(startRow + i, startCol + j), true);
-        }
-      }
-    }
-
-    setGrid(newGrid);
-    setGeneration(0);
-    setPopulation(newGrid.size);
-
-    // Center the view on the pattern's approximate center (0,0 in grid coordinates)
-    positionRef.current = { x: 0, y: 0 };
-    setGrid(prev => new Map(prev));
-  }, [getCellKey]);
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -663,67 +625,6 @@ export default function Game() {
     });
     setGeneration(g => g + 1);
     setTimeout(runSimulation, 100);
-  }, [getCellKey]);
-
-
-  // Mouse down handler for grid drag or cell toggle
-  const handleMouseDown = (e) => {
-    if (e.button === 0) {
-      setIsDragging(false);
-      setDragStart({
-        x: e.clientX - positionRef.current.x,
-        y: e.clientY - positionRef.current.y
-      });
-      setDragDistance(0);
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUpGlobal, { once: true });
-    }
-  };
-
-  // Mouse up handler: finish drag or toggle cell
-  const handleMouseUpGlobal = useCallback((e) => {
-    window.removeEventListener('mousemove', handleMouseMove);
-    if (!isDragging && dragDistance <= 5) {
-      if (!containerRef.current) return;
-      const containerRect = containerRef.current.getBoundingClientRect();
-      const containerWidth = containerRef.current.clientWidth;
-      const containerHeight = containerRef.current.clientHeight;
-      const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
-      const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
-      const col = Math.floor((relativeX - positionRef.current.x) / cellSize);
-      const row = Math.floor((relativeY - positionRef.current.y) / cellSize);
-      toggleCell(row, col);
-    }
-    setIsDragging(false);
-    setDragStart({ x: 0, y: 0 });
-    setDragDistance(0);
-  }, [isDragging, dragDistance, cellSize, toggleCell, handleMouseMove]);
-
-  // Load a predefined pattern into the grid
-  const loadPattern = useCallback((patternName) => {
-    if (!patternName || !containerRef.current) return;
-    const patternData = PATTERNS[patternName];
-    if (!patternData) return;
-    const pattern = patternData.pattern;
-    const newGrid = new Map();
-    const patternHeight = pattern.length;
-    const patternWidth = pattern[0].length;
-    const startRow = -Math.floor(patternHeight / 2);
-    const startCol = -Math.floor(patternWidth / 2);
-    for (let i = 0; i < patternHeight; i++) {
-      for (let j = 0; j < patternWidth; j++) {
-        if (pattern[i][j] === 1) {
-          newGrid.set(getCellKey(startRow + i, startCol + j), true);
-        }
-      }
-    }
-    setGrid(newGrid);
-    setGeneration(0);
-    setPopulation(newGrid.size);
-    setPosition({
-      x: 0,
-      y: 0
-    });
   }, [getCellKey]);
 
   useEffect(() => {
