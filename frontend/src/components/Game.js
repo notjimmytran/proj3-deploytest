@@ -1,7 +1,8 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-const GRID_SIZE = 20; // Adjust grid size as needed
+// We'll calculate GRID_SIZE dynamically
+const CELL_SIZE = 25; // Keep cell size constant
 
 // Predefined patterns
 const PATTERNS = {
@@ -55,15 +56,40 @@ const PATTERNS = {
 export default function Game() {
   const navigate = useNavigate();
   const user = JSON.parse(localStorage.getItem('user'));
+  const containerRef = useRef(null);
+  const [gridSize, setGridSize] = useState({ rows: 20, cols: 20 });
   const [grid, setGrid] = useState(() => {
-    const rows = Array(GRID_SIZE).fill(null).map(() => Array(GRID_SIZE).fill(false));
-    return rows;
+    return Array(20).fill(null).map(() => Array(20).fill(false));
   });
   const [isRunning, setIsRunning] = useState(false);
   const [generation, setGeneration] = useState(0);
-  const [population, setPopulation] = useState(0); // Add population counter
+  const [population, setPopulation] = useState(0);
   const runningRef = useRef(isRunning);
   runningRef.current = isRunning;
+
+  // Calculate grid dimensions based on container size
+  useEffect(() => {
+    const updateGridSize = () => {
+      if (containerRef.current) {
+        const containerWidth = containerRef.current.clientWidth;
+        const containerHeight = containerRef.current.clientHeight;
+        const cols = Math.floor(containerWidth / CELL_SIZE);
+        const rows = Math.floor(containerHeight / CELL_SIZE);
+        
+        if (cols !== gridSize.cols || rows !== gridSize.rows) {
+          setGridSize({ rows, cols });
+          setGrid(Array(rows).fill(null).map(() => Array(cols).fill(false)));
+          setGeneration(0);
+          setPopulation(0);
+          setIsRunning(false);
+        }
+      }
+    };
+
+    updateGridSize();
+    window.addEventListener('resize', updateGridSize);
+    return () => window.removeEventListener('resize', updateGridSize);
+  }, []);
 
   const runSimulation = useCallback(() => {
     if (!runningRef.current) return;
@@ -72,23 +98,20 @@ export default function Game() {
       const nextGen = g.map((row, i) =>
         row.map((cell, j) => {
           let neighbors = 0;
-          // Check all 8 neighbors
           for (let di = -1; di <= 1; di++) {
             for (let dj = -1; dj <= 1; dj++) {
               if (di === 0 && dj === 0) continue;
-              const newI = (i + di + GRID_SIZE) % GRID_SIZE;
-              const newJ = (j + dj + GRID_SIZE) % GRID_SIZE;
+              const newI = (i + di + gridSize.rows) % gridSize.rows;
+              const newJ = (j + dj + gridSize.cols) % gridSize.cols;
               if (g[newI][newJ]) neighbors++;
             }
           }
-          // Conway's Game of Life rules
           if (cell && (neighbors < 2 || neighbors > 3)) return false;
           if (!cell && neighbors === 3) return true;
           return cell;
         })
       );
       setGeneration(prev => prev + 1);
-      // Update population count
       const newPopulation = nextGen.reduce((sum, row) => 
         sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
       );
@@ -97,21 +120,23 @@ export default function Game() {
     });
 
     setTimeout(runSimulation, 100);
-  }, []);
+  }, [gridSize]);
 
   // Function to load a pattern
   const loadPattern = (patternName) => {
+    if (!patternName) return;
+    
     const pattern = PATTERNS[patternName].pattern;
-    const newGrid = Array(GRID_SIZE).fill(null).map(() => Array(GRID_SIZE).fill(false));
+    const newGrid = Array(gridSize.rows).fill(null).map(() => Array(gridSize.cols).fill(false));
     
-    // Calculate center position to place pattern
-    const startI = Math.floor((GRID_SIZE - pattern.length) / 2);
-    const startJ = Math.floor((GRID_SIZE - pattern[0].length) / 2);
+    const startI = Math.floor((gridSize.rows - pattern.length) / 2);
+    const startJ = Math.floor((gridSize.cols - pattern[0].length) / 2);
     
-    // Place pattern in center of grid
     for (let i = 0; i < pattern.length; i++) {
       for (let j = 0; j < pattern[i].length; j++) {
-        newGrid[startI + i][startJ + j] = pattern[i][j] === 1;
+        if (startI + i < gridSize.rows && startJ + j < gridSize.cols) {
+          newGrid[startI + i][startJ + j] = pattern[i][j] === 1;
+        }
       }
     }
     
@@ -134,8 +159,8 @@ export default function Game() {
             for (let di = -1; di <= 1; di++) {
               for (let dj = -1; dj <= 1; dj++) {
                 if (di === 0 && dj === 0) continue;
-                const newI = (i + di + GRID_SIZE) % GRID_SIZE;
-                const newJ = (j + dj + GRID_SIZE) % GRID_SIZE;
+                const newI = (i + di + gridSize.rows) % gridSize.rows;
+                const newJ = (j + dj + gridSize.cols) % gridSize.cols;
                 if (g[newI][newJ]) neighbors++;
               }
             }
@@ -147,7 +172,7 @@ export default function Game() {
         return nextGen;
       });
       setGeneration(g => g + 1);
-      await new Promise(resolve => setTimeout(resolve, 50)); // Small delay between generations
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
   };
 
@@ -175,7 +200,7 @@ export default function Game() {
   };
 
   const resetGrid = () => {
-    setGrid(Array(GRID_SIZE).fill(null).map(() => Array(GRID_SIZE).fill(false)));
+    setGrid(Array(gridSize.rows).fill(null).map(() => Array(gridSize.cols).fill(false)));
     setGeneration(0);
     setIsRunning(false);
     setPopulation(0);
@@ -186,21 +211,37 @@ export default function Game() {
       minHeight: '100vh',
       background: 'linear-gradient(135deg, #073b4c 0%, #061a40 100%)',
       padding: '2rem',
-      color: 'white'
+      color: 'white',
+      display: 'flex',
+      flexDirection: 'column'
     }}>
       <div style={{
-        maxWidth: '1000px',
+        maxWidth: '1200px',
         margin: '0 auto',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        height: '90vh'
       }}>
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '1rem'
+          alignItems: 'flex-start',
+          marginBottom: '1.5rem'
         }}>
-          <div>
-            <h2 style={{ color: '#90e0ef' }}>Generation: {generation}</h2>
-            <h3 style={{ color: '#90e0ef' }}>Population: {population}</h3>
+          <div style={{ marginRight: '2rem' }}>
+            <h2 style={{ 
+              color: '#90e0ef', 
+              margin: 0,
+              fontSize: '1.5rem',
+              fontWeight: '500'
+            }}>Generation: {generation}</h2>
+            <h3 style={{ 
+              color: '#90e0ef', 
+              margin: '0.5rem 0 0 0',
+              fontSize: '1.2rem',
+              fontWeight: '500'
+            }}>Population: {population}</h3>
           </div>
           <button
             onClick={handleLogout}
@@ -210,45 +251,59 @@ export default function Game() {
               border: 'none',
               background: '#ff686b',
               color: 'white',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              flexShrink: 0
             }}
           >
             Logout
           </button>
         </div>
 
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: `repeat(${GRID_SIZE}, 25px)`,
-          gap: '1px',
-          background: '#1a1a1a',
-          padding: '1px',
-          marginBottom: '1rem',
-          justifyContent: 'center'
-        }}>
-          {grid.map((row, i) =>
-            row.map((cell, j) => (
-              <div
-                key={`${i}-${j}`}
-                onClick={() => toggleCell(i, j)}
-                style={{
-                  width: '25px',
-                  height: '25px',
-                  backgroundColor: cell ? '#06d6a0' : '#2a2a2a',
-                  border: '1px solid #333',
-                  cursor: 'pointer'
-                }}
-              />
-            ))
-          )}
+        <div 
+          ref={containerRef}
+          style={{
+            width: '100%',
+            flex: 1,
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            marginBottom: '1.5rem'
+          }}
+        >
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${gridSize.cols}, ${CELL_SIZE}px)`,
+            gap: '1px',
+            background: '#1a1a1a',
+            padding: '1px',
+          }}>
+            {grid.map((row, i) =>
+              row.map((cell, j) => (
+                <div
+                  key={`${i}-${j}`}
+                  onClick={() => toggleCell(i, j)}
+                  style={{
+                    width: `${CELL_SIZE}px`,
+                    height: `${CELL_SIZE}px`,
+                    backgroundColor: cell ? '#06d6a0' : '#2a2a2a',
+                    border: '1px solid #333',
+                    cursor: 'pointer'
+                  }}
+                />
+              ))
+            )}
+          </div>
         </div>
 
         <div style={{
           display: 'flex',
           gap: '1rem',
           justifyContent: 'center',
-          marginBottom: '1rem',
-          flexWrap: 'wrap'
+          flexWrap: 'wrap',
+          padding: '1rem',
+          background: 'rgba(26, 26, 26, 0.5)',
+          borderRadius: '12px',
+          marginBottom: '2rem'
         }}>
           <button
             onClick={() => {
@@ -264,7 +319,8 @@ export default function Game() {
               border: 'none',
               background: isRunning ? '#ff686b' : '#06d6a0',
               color: 'white',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              minWidth: '120px'
             }}
           >
             {isRunning ? 'Stop' : 'Start'}
@@ -279,8 +335,8 @@ export default function Game() {
                     for (let di = -1; di <= 1; di++) {
                       for (let dj = -1; dj <= 1; dj++) {
                         if (di === 0 && dj === 0) continue;
-                        const newI = (i + di + GRID_SIZE) % GRID_SIZE;
-                        const newJ = (j + dj + GRID_SIZE) % GRID_SIZE;
+                        const newI = (i + di + gridSize.rows) % gridSize.rows;
+                        const newJ = (j + dj + gridSize.cols) % gridSize.cols;
                         if (g[newI][newJ]) neighbors++;
                       }
                     }
@@ -303,7 +359,8 @@ export default function Game() {
               border: 'none',
               background: '#0aefff',
               color: 'white',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              minWidth: '120px'
             }}
           >
             Next Generation
@@ -316,7 +373,8 @@ export default function Game() {
               border: 'none',
               background: '#0aefff',
               color: 'white',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              minWidth: '120px'
             }}
           >
             +23 Generations
@@ -329,7 +387,8 @@ export default function Game() {
               border: 'none',
               background: '#ff686b',
               color: 'white',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              minWidth: '120px'
             }}
           >
             Reset
@@ -342,7 +401,8 @@ export default function Game() {
               border: 'none',
               background: '#2a2a2a',
               color: 'white',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              minWidth: '120px'
             }}
           >
             <option value="">Select Pattern</option>
