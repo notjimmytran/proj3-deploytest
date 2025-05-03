@@ -1,23 +1,23 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  startSession, 
-  endSession, 
-  saveGameState, 
-  loadGameState 
+import {
+  startSession,
+  endSession,
+  saveGameState,
+  loadGameState
 } from '../services/gameservice';
 
-import { 
-  savePattern, 
-  listPatterns, 
-  getPattern, 
-  deletePattern 
+import {
+  savePattern,
+  listPatterns,
+  getPattern,
+  deletePattern
 } from '../services/patternservice';
 
-// Add throttle utility at the top
+// Throttle utility to limit function execution rate (for drag events)
 const throttle = (func, limit) => {
   let inThrottle;
-  return function(...args) {
+  return function (...args) {
     if (!inThrottle) {
       func.apply(this, args);
       inThrottle = true;
@@ -30,9 +30,8 @@ const MIN_CELL_SIZE = 15;
 const MAX_CELL_SIZE = 40;
 const DEFAULT_CELL_SIZE = 25;
 
-// Predefined patterns
+// Predefined Conway's Game of Life patterns
 const PATTERNS = {
-  // Still Life Patterns
   block: {
     name: 'Block',
     pattern: [
@@ -50,7 +49,6 @@ const PATTERNS = {
       [0, 1, 1, 0]
     ]
   },
-  // Oscillator Patterns
   blinker: {
     name: 'Blinker',
     pattern: [
@@ -68,13 +66,68 @@ const PATTERNS = {
       [0, 0, 1, 1]
     ]
   },
-  // Bonus: Glider Pattern
   glider: {
     name: 'Glider',
     pattern: [
       [0, 1, 0],
       [0, 0, 1],
       [1, 1, 1]
+    ]
+  },
+  boat: {
+    name: 'Boat',
+    pattern: [
+      [1, 1, 0],
+      [1, 0, 1],
+      [0, 1, 0]
+    ]
+  },
+  loaf: {
+    name: 'Loaf',
+    pattern: [
+      [0, 1, 1, 0],
+      [1, 0, 0, 1],
+      [0, 1, 0, 1],
+      [0, 0, 1, 0]
+    ]
+  },
+  toad: {
+    name: 'Toad',
+    pattern: [
+      [0, 1, 1, 1],
+      [1, 1, 1, 0]
+    ]
+  },
+  pulsar: {
+    name: 'Pulsar',
+    pattern: [
+      [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+      [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+      [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+      [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0],
+      [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+      [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+      [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0]
+    ]
+  },
+  gosper_glider_gun: {
+    name: 'Gosper Glider Gun',
+    pattern: [
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+      [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     ]
   }
 };
@@ -84,6 +137,7 @@ export default function Game() {
   const user = JSON.parse(localStorage.getItem('user'));
   const containerRef = useRef(null);
 
+  // State variables for grid, UI, and session management
   const [cellSize, setCellSize] = useState(DEFAULT_CELL_SIZE);
   const [grid, setGrid] = useState(() => new Map());
   const [position, setPosition] = useState(() => ({ x: 0, y: 0 }));
@@ -107,6 +161,7 @@ export default function Game() {
   const [isLoadingPattern, setIsLoadingPattern] = useState(false);
   const [isLoadingPatternList, setIsLoadingPatternList] = useState(false);
 
+  // Refs for keeping latest state in async callbacks
   const runningRef = useRef(isRunning);
   runningRef.current = isRunning;
   const positionRef = useRef(position);
@@ -122,7 +177,7 @@ export default function Game() {
   sessionIdRef.current = sessionId;
   const messageTimeoutRef = useRef(null);
 
-  // Pre-calculate container dimensions
+  // Get container dimensions for rendering visible grid
   const containerDimensions = useCallback(() => {
     if (!containerRef.current) return { width: 0, height: 0 };
     const rect = containerRef.current.getBoundingClientRect();
@@ -132,10 +187,10 @@ export default function Game() {
     };
   }, []);
 
-  // Memoize cell key generation
+  // Generate a unique key for each cell
   const getCellKey = useCallback((row, col) => `${row},${col}`, []);
 
-  // Memoize the cell style creation
+  // Style for each cell, memoized for performance
   const getCellStyle = useCallback((x, y, isAlive, size, isDragging) => ({
     width: size,
     height: size,
@@ -150,6 +205,7 @@ export default function Game() {
     pointerEvents: isDragging ? 'none' : 'auto'
   }), []);
 
+  // Calculate which cells are visible in the viewport
   const getVisibleCells = useCallback(() => {
     const { width, height } = containerDimensions();
     if (!width || !height) return { startRow: 0, endRow: 0, startCol: 0, endCol: 0 };
@@ -162,13 +218,14 @@ export default function Game() {
     const centerY = -currentPosition.y / cellSize;
 
     return {
-      startRow: Math.floor(centerY - rowsNeeded/2),
-      endRow: Math.ceil(centerY + rowsNeeded/2),
-      startCol: Math.floor(centerX - colsNeeded/2),
-      endCol: Math.ceil(centerX + colsNeeded/2)
+      startRow: Math.floor(centerY - rowsNeeded / 2),
+      endRow: Math.ceil(centerY + rowsNeeded / 2),
+      startCol: Math.floor(centerX - colsNeeded / 2),
+      endCol: Math.ceil(centerX + colsNeeded / 2)
     };
   }, [cellSize, containerDimensions]);
 
+  // Toggle cell alive/dead state
   const toggleCell = useCallback((row, col) => {
     const key = getCellKey(row, col);
     setGrid(prevGrid => {
@@ -183,7 +240,7 @@ export default function Game() {
     });
   }, [getCellKey]);
 
-  // Helper function to show temporary messages
+  // Show a temporary message to the user
   const showMessage = (text, type = 'success') => {
     setMessage({ text, type });
     if (messageTimeoutRef.current) {
@@ -195,7 +252,7 @@ export default function Game() {
     }, 5000);
   };
 
-  // Pattern management functions
+  // Load user's saved patterns from backend
   const loadSavedPatterns = useCallback(async () => {
     if (!user?.id) return;
     setIsLoadingPatternList(true);
@@ -214,12 +271,14 @@ export default function Game() {
     }
   }, [user?.id]);
 
+  // Load patterns when user logs in
   useEffect(() => {
     if (user?.id) {
       loadSavedPatterns();
     }
   }, [user?.id, loadSavedPatterns]);
 
+  // Save current grid as a pattern
   const handleSavePattern = async () => {
     if (!user?.id || !patternName.trim()) return;
     setIsSavingPattern(true);
@@ -242,6 +301,7 @@ export default function Game() {
     }
   };
 
+  // Load a saved pattern into the grid
   const handleLoadPattern = async (patternId) => {
     setIsLoadingPattern(true);
     try {
@@ -265,6 +325,7 @@ export default function Game() {
     }
   };
 
+  // Delete a saved pattern
   const handleDeletePattern = async (patternId, event) => {
     event.stopPropagation();
     if (!window.confirm('Are you sure you want to delete this pattern?')) return;
@@ -289,9 +350,9 @@ export default function Game() {
       const menu = document.getElementById('pattern-menu');
       const button = document.getElementById('pattern-menu-button');
       if (
-        menu && 
+        menu &&
         !menu.contains(event.target) &&
-        button && 
+        button &&
         !button.contains(event.target)
       ) {
         setShowPatternMenu(false);
@@ -303,6 +364,7 @@ export default function Game() {
     };
   }, [showPatternMenu]);
 
+  // Mouse move handler for dragging grid (throttled)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleMouseMove = useCallback(
     throttle((e) => {
@@ -331,6 +393,7 @@ export default function Game() {
       setDragDistance(distance);
     }, 16), [dragStart, isDragging]);
 
+  // Render only visible cells in the viewport
   const renderGrid = useCallback(() => {
     const { startRow, endRow, startCol, endCol } = getVisibleCells();
     const cells = [];
@@ -353,7 +416,7 @@ export default function Game() {
         const x = (col * currentCellSize) + currentPosition.x + halfContainerWidth;
         const y = (row * currentCellSize) + currentPosition.y + halfContainerHeight;
         if (x < -currentCellSize || x > containerWidth + currentCellSize ||
-            y < -currentCellSize || y > containerHeight + currentCellSize) {
+          y < -currentCellSize || y > containerHeight + currentCellSize) {
           continue;
         }
         cells.push(
@@ -367,6 +430,7 @@ export default function Game() {
     return cells;
   }, [cellSize, isDragging, getVisibleCells, getCellStyle, getCellKey]);
 
+  // Cleanup animation frame and message timeout on unmount
   useEffect(() => {
     return () => {
       if (rafRef.current) {
@@ -378,11 +442,13 @@ export default function Game() {
     };
   }, []);
 
+  // Main simulation loop for Conway's Game of Life
   const runSimulation = useCallback(() => {
     if (!runningRef.current) return;
     setGrid(g => {
       const newGrid = new Map();
       const activeCells = new Set();
+      // Find all cells that need to be checked (alive and their neighbors)
       for (const [key] of g) {
         const [row, col] = key.split(',').map(Number);
         activeCells.add(key);
@@ -394,6 +460,7 @@ export default function Game() {
           }
         }
       }
+      // Apply Game of Life rules
       for (const key of activeCells) {
         const [row, col] = key.split(',').map(Number);
         let neighbors = 0;
@@ -418,6 +485,7 @@ export default function Game() {
     setTimeout(runSimulation, 100);
   }, [getCellKey]);
 
+  // Mouse down handler for grid drag or cell toggle
   const handleMouseDown = (e) => {
     if (e.button === 0) {
       setIsDragging(false);
@@ -431,6 +499,7 @@ export default function Game() {
     }
   };
 
+  // Mouse up handler: finish drag or toggle cell
   const handleMouseUpGlobal = useCallback((e) => {
     window.removeEventListener('mousemove', handleMouseMove);
     if (!isDragging && dragDistance <= 5) {
@@ -449,6 +518,7 @@ export default function Game() {
     setDragDistance(0);
   }, [isDragging, dragDistance, cellSize, toggleCell, handleMouseMove]);
 
+  // Load a predefined pattern into the grid
   const loadPattern = useCallback((patternName) => {
     if (!patternName || !containerRef.current) return;
     const patternData = PATTERNS[patternName];
@@ -475,6 +545,7 @@ export default function Game() {
     });
   }, [getCellKey]);
 
+  // On mount: reset position and start session if user is logged in
   useEffect(() => {
     if (containerRef.current) {
       setPosition({
@@ -490,12 +561,13 @@ export default function Game() {
           showMessage("Failed to start session: " + (response.error || "Unknown error"), "error");
         }
       }).catch(error => {
-         showMessage("Network error starting session", "error");
+        showMessage("Network error starting session", "error");
       });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  // On unmount: end session and save stats
   useEffect(() => {
     return () => {
       const currentSessionId = sessionIdRef.current;
@@ -504,13 +576,14 @@ export default function Game() {
           .then(response => {
             // Optionally handle response
           }).catch(error => {
-             // Optionally handle error
+            // Optionally handle error
           });
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  // Zoom in/out and keep grid centered
   const handleZoom = useCallback((zoomIn) => {
     setCellSize(prevSize => {
       const newSize = zoomIn ?
@@ -530,6 +603,7 @@ export default function Game() {
     });
   }, []);
 
+  // Reset the grid and UI to initial state
   const resetGrid = () => {
     setGrid(new Map());
     setGeneration(0);
@@ -541,6 +615,7 @@ export default function Game() {
     setCellSize(DEFAULT_CELL_SIZE);
   };
 
+  // Advance the simulation by one generation
   const handleNextGeneration = useCallback(() => {
     setGrid(g => {
       const newGrid = new Map();
@@ -575,6 +650,7 @@ export default function Game() {
     setGeneration(g => g + 1);
   }, [getCellKey]);
 
+  // Advance the simulation by 23 generations (for fun)
   const advance23Generations = useCallback(() => {
     const wasRunning = runningRef.current;
     if (wasRunning) {
@@ -596,6 +672,7 @@ export default function Game() {
     advanceStep();
   }, [handleNextGeneration]);
 
+  // Save current game state to backend
   const handleSaveState = async () => {
     if (!user?.id) return;
     setIsLoading(true);
@@ -621,6 +698,7 @@ export default function Game() {
     }
   };
 
+  // Load last saved game state from backend
   const handleLoadState = async () => {
     if (!user?.id) return;
     setIsLoading(true);
@@ -648,6 +726,7 @@ export default function Game() {
     }
   };
 
+  // Auto-save game state when enabled and grid changes
   useEffect(() => {
     if (!autoSaveEnabled || !user?.id || grid.size === 0) return;
     const handler = setTimeout(() => {
@@ -670,6 +749,7 @@ export default function Game() {
     return () => clearTimeout(handler);
   }, [grid, generation, position, cellSize, user?.id, autoSaveEnabled, population]);
 
+  // Start/stop simulation loop when isRunning changes
   useEffect(() => {
     if (isRunning) {
       runningRef.current = true;
@@ -679,22 +759,25 @@ export default function Game() {
     }
   }, [isRunning, runSimulation]);
 
+  // Redirect to login if user is not authenticated
   if (!user) {
     navigate('/login');
     return null;
   }
 
+  // Logout handler: end session and clear user data
   const handleLogout = async () => {
     if (sessionId && user?.id) {
       try {
         await endSession(sessionId, generation, population);
-      } catch (error) {}
+      } catch (error) { }
     }
     localStorage.removeItem('user');
     setSessionId(null);
     navigate('/login');
   };
 
+  // Button style for controls
   const controlButtonStyle = {
     padding: '0.5rem 1rem',
     borderRadius: '8px',
@@ -707,6 +790,7 @@ export default function Game() {
     minWidth: '100px',
   };
 
+  // --- JSX rendering below ---
   return (
     <div style={{
       height: '100vh',
@@ -718,6 +802,7 @@ export default function Game() {
       overflow: 'hidden',
       boxSizing: 'border-box'
     }}>
+      {/* Main container */}
       <div style={{
         maxWidth: '1200px',
         margin: '0 auto',
@@ -727,6 +812,7 @@ export default function Game() {
         flexDirection: 'column',
         boxSizing: 'border-box'
       }}>
+        {/* Top bar: stats, message, logout */}
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
@@ -735,6 +821,7 @@ export default function Game() {
           flexShrink: 0,
           gap: '1rem'
         }}>
+          {/* Generation and population stats */}
           <div style={{
             background: 'rgba(26, 26, 26, 0.6)',
             padding: '0.75rem 1.25rem',
@@ -776,14 +863,15 @@ export default function Game() {
               }}>{population}</span>
             </div>
           </div>
+          {/* Message display */}
           {message && (
             <div style={{
-              background: message.type === 'error' ? 'rgba(255, 104, 107, 0.2)' : 
-                          message.type === 'info' ? 'rgba(10, 239, 255, 0.2)' : 
-                          'rgba(6, 214, 160, 0.2)',
-              color: message.type === 'error' ? '#ff686b' : 
-                     message.type === 'info' ? '#0aefff' : 
-                     '#06d6a0',
+              background: message.type === 'error' ? 'rgba(255, 104, 107, 0.2)' :
+                message.type === 'info' ? 'rgba(10, 239, 255, 0.2)' :
+                  'rgba(6, 214, 160, 0.2)',
+              color: message.type === 'error' ? '#ff686b' :
+                message.type === 'info' ? '#0aefff' :
+                  '#06d6a0',
               padding: '0.5rem 1rem',
               borderRadius: '8px',
               fontSize: '0.9rem',
@@ -794,6 +882,22 @@ export default function Game() {
               {message.text}
             </div>
           )}
+          {/* Dashboard Page */}
+          <button
+          onClick={() => navigate('/dashboard')}
+          style={{
+            ...controlButtonStyle,
+            background: '#06d6a0',
+            color: '#073b4c',
+            padding: '0.6rem 1.2rem',
+            minWidth: 'auto'
+          }}
+          onMouseOver={e => e.currentTarget.style.backgroundColor = '#05b387'}
+          onMouseOut={e => e.currentTarget.style.backgroundColor = '#06d6a0'}
+        >
+          Dashboard
+        </button>
+          {/* Logout button */}
           <button
             onClick={handleLogout}
             style={{
@@ -808,6 +912,7 @@ export default function Game() {
             Logout
           </button>
         </div>
+        {/* Main grid area */}
         <div
           ref={containerRef}
           style={{
@@ -833,6 +938,7 @@ export default function Game() {
             {renderGrid()}
           </div>
         </div>
+        {/* Controls bar */}
         <div style={{
           display: 'flex',
           gap: '0.75rem',
@@ -847,6 +953,7 @@ export default function Game() {
           boxShadow: '0 4px 15px rgba(0, 0, 0, 0.2)',
           flexShrink: 0
         }}>
+          {/* Zoom out button */}
           <button
             onClick={() => handleZoom(false)}
             style={{
@@ -868,6 +975,7 @@ export default function Game() {
           >
             -
           </button>
+          {/* Zoom in button */}
           <button
             onClick={() => handleZoom(true)}
             style={{
@@ -889,6 +997,7 @@ export default function Game() {
           >
             +
           </button>
+          {/* Start/Stop simulation */}
           <button
             onClick={() => setIsRunning(!isRunning)}
             style={{
@@ -901,6 +1010,7 @@ export default function Game() {
           >
             {isRunning ? 'Stop' : 'Start'}
           </button>
+          {/* Next generation button */}
           <button
             onClick={handleNextGeneration}
             disabled={isRunning}
@@ -917,6 +1027,7 @@ export default function Game() {
           >
             Next Gen
           </button>
+          {/* Advance 23 generations */}
           <button
             onClick={advance23Generations}
             disabled={isRunning}
@@ -933,6 +1044,7 @@ export default function Game() {
           >
             +23 Gens
           </button>
+          {/* Reset grid */}
           <button
             onClick={resetGrid}
             style={{
@@ -945,6 +1057,7 @@ export default function Game() {
           >
             Reset
           </button>
+          {/* Toggle auto-save */}
           <button
             onClick={() => setAutoSaveEnabled(!autoSaveEnabled)}
             style={{
@@ -957,6 +1070,7 @@ export default function Game() {
           >
             {autoSaveEnabled ? 'AutoSave: ON' : 'AutoSave: OFF'}
           </button>
+          {/* Save game state */}
           <button
             onClick={handleSaveState}
             disabled={isLoading}
@@ -973,6 +1087,7 @@ export default function Game() {
           >
             {isLoading ? 'Saving...' : 'Save Game'}
           </button>
+          {/* Load last saved game state */}
           <button
             onClick={handleLoadState}
             disabled={isLoading}
@@ -981,7 +1096,7 @@ export default function Game() {
               background: '#f9c74f',
               color: '#073b4c',
               minWidth: '100px',
-              opacity: isLoading ? 0.7 : 1, 
+              opacity: isLoading ? 0.7 : 1,
               cursor: isLoading ? 'wait' : 'pointer'
             }}
             onMouseOver={e => !isLoading && (e.currentTarget.style.backgroundColor = '#f3b529')}
@@ -989,6 +1104,7 @@ export default function Game() {
           >
             {isLoading ? 'Loading...' : 'Load Last Game'}
           </button>
+          {/* Predefined pattern selector */}
           <select
             onChange={(e) => loadPattern(e.target.value)}
             defaultValue=""
@@ -1001,7 +1117,7 @@ export default function Game() {
               height: '36px',
               border: '1px solid rgba(255, 255, 255, 0.2)',
               appearance: 'none',
-              backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23ffffff%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E")',
+              backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23ffffff%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E")',
               backgroundRepeat: 'no-repeat',
               backgroundPosition: 'right 0.7rem top 50%',
               backgroundSize: '0.65rem auto',
@@ -1012,16 +1128,23 @@ export default function Game() {
             <optgroup label="Still Life">
               <option value="block">Block</option>
               <option value="beehive">Beehive</option>
+              <option value="boat">Boat</option>
+              <option value="loaf">Loaf</option>
             </optgroup>
             <optgroup label="Oscillators">
               <option value="blinker">Blinker</option>
               <option value="beacon">Beacon</option>
+              <option value="toad">Toad</option>
+              <option value="pulsar">Pulsar</option>
             </optgroup>
             <optgroup label="Spaceships">
               <option value="glider">Glider</option>
             </optgroup>
+            <optgroup label="Guns (Bonus)">
+              <option value="gosper_glider_gun">Gosper Glider Gun</option>
+            </optgroup>
           </select>
-          {/* Custom Pattern Management Buttons */}
+          {/* Save current pattern button */}
           <button
             onClick={() => setShowSaveModal(true)}
             disabled={isSavingPattern || grid.size === 0}
@@ -1038,6 +1161,7 @@ export default function Game() {
           >
             Save Pattern
           </button>
+          {/* Show user's saved patterns */}
           <button
             id="pattern-menu-button"
             onClick={() => {
