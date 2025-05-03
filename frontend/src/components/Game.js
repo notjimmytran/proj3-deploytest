@@ -177,6 +177,41 @@ export default function Game() {
   sessionIdRef.current = sessionId;
   const messageTimeoutRef = useRef(null);
 
+  const [menuPosition, setMenuPosition] = useState({ top: 60, left: window.innerWidth - 350 });
+  const [dragging, setDragging] = useState(false);
+  const [rel, setRel] = useState({ x: 0, y: 0 });
+  
+  const startDrag = (e) => {
+    e.preventDefault();
+    setDragging(true);
+    setRel({
+      x: e.clientX - menuPosition.left,
+      y: e.clientY - menuPosition.top
+    });
+  };
+  
+  const onDrag = (e) => {
+    if (!dragging) return;
+    setMenuPosition({
+      top: e.clientY - rel.y,
+      left: e.clientX - rel.x
+    });
+  };
+  
+  const stopDrag = () => {
+    setDragging(false);
+  };
+  
+  useEffect(() => {
+    document.addEventListener('mousemove', onDrag);
+    document.addEventListener('mouseup', stopDrag);
+    return () => {
+      document.removeEventListener('mousemove', onDrag);
+      document.removeEventListener('mouseup', stopDrag);
+    };
+  }, [dragging, rel]);
+  
+
   // Get container dimensions for rendering visible grid
   const containerDimensions = useCallback(() => {
     if (!containerRef.current) return { width: 0, height: 0 };
@@ -1259,75 +1294,78 @@ export default function Game() {
             </div>
           </div>
         )}
-        {/* Pattern Library Menu */}
-        {showPatternMenu && (
-          <div
-            id="pattern-menu"
+       {showPatternMenu && (
+  <div
+    id="pattern-menu"
+    style={{
+      position: 'absolute',
+      top: menuPosition.top,
+      left: menuPosition.left,
+      width: '300px',
+      maxHeight: '400px',
+      overflowY: 'auto',
+      backgroundColor: '#1a1a1a',
+      border: '1px solid rgba(255, 255, 255, 0.1)',
+      borderRadius: '12px',
+      boxShadow: '0 8px 20px rgba(0, 0, 0, 0.4)',
+      zIndex: 1000,
+      padding: '1rem',
+      cursor: 'move', // <--- visually shows user it's draggable
+    }}
+    onMouseDown={startDrag}
+  >
+    <h3 style={{ color: '#fff', marginTop: 0, marginBottom: '1rem' }}>My Saved Patterns</h3>
+    {isLoadingPatternList ? (
+      <p style={{ color: '#90e0ef', textAlign: 'center', padding: '1rem 0' }}>
+        Loading patterns...
+      </p>
+    ) : savedPatterns.length === 0 ? (
+      <p style={{ color: '#90e0ef', textAlign: 'center', padding: '1rem 0' }}>
+        You don't have any saved patterns yet.
+      </p>
+    ) : (
+      <ul style={{ listStyleType: 'none', padding: 0, margin: 0 }}>
+        {savedPatterns.map(pattern => (
+          <li
+            key={pattern.id}
+            onClick={() => handleLoadPattern(pattern.id)}
             style={{
-              position: 'absolute',
-              width: '300px',
-              maxHeight: '400px',
-              overflowY: 'auto',
-              backgroundColor: '#1a1a1a',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              borderRadius: '12px',
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
-              zIndex: 100,
-              padding: '1rem',
-              right: '1rem',
-              top: 'calc(100% + 10px)',
-            }}>
-            <h3 style={{ color: '#fff', marginTop: 0 }}>My Saved Patterns</h3>
-            {isLoadingPatternList ? (
-              <p style={{ color: '#90e0ef', textAlign: 'center', padding: '1rem 0' }}>
-                Loading patterns...
-              </p>
-            ) : savedPatterns.length === 0 ? (
-              <p style={{ color: '#90e0ef', textAlign: 'center', padding: '1rem 0' }}>
-                You don't have any saved patterns yet.
-              </p>
-            ) : (
-              <ul style={{ listStyleType: 'none', padding: 0, margin: 0 }}>
-                {savedPatterns.map(pattern => (
-                  <li
-                    key={pattern.id}
-                    onClick={() => handleLoadPattern(pattern.id)}
-                    style={{
-                      padding: '0.75rem 1rem',
-                      borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-                      color: '#fff',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      transition: 'background-color 0.2s ease'
-                    }}
-                    onMouseOver={e => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
-                    onMouseOut={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                  >
-                    <span>{pattern.name}</span>
-                    <button
-                      onClick={(e) => handleDeletePattern(pattern.id, e)}
-                      style={{
-                        background: '#ff686b',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        padding: '0.25rem 0.5rem',
-                        fontSize: '0.8rem',
-                        cursor: 'pointer'
-                      }}
-                      onMouseOver={e => e.currentTarget.style.backgroundColor = '#e05558'}
-                      onMouseOut={e => e.currentTarget.style.backgroundColor = '#ff686b'}
-                    >
-                      Delete
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
+              padding: '0.75rem 1rem',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+              color: '#fff',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              cursor: 'pointer',
+              transition: 'background-color 0.2s ease'
+            }}
+            onMouseOver={e => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+            onMouseOut={e => e.currentTarget.style.backgroundColor = 'transparent'}
+          >
+            <span>{pattern.name}</span>
+            <button
+              onClick={(e) => handleDeletePattern(pattern.id, e)}
+              style={{
+                background: '#ff686b',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                padding: '0.25rem 0.5rem',
+                fontSize: '0.8rem',
+                cursor: 'pointer'
+              }}
+              onMouseOver={e => e.currentTarget.style.backgroundColor = '#e05558'}
+              onMouseOut={e => e.currentTarget.style.backgroundColor = '#ff686b'}
+            >
+              Delete
+            </button>
+          </li>
+        ))}
+      </ul>
+    )}
+  </div>
+)}
+
       </div>
     </div>
   );
