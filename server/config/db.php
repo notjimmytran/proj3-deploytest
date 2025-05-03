@@ -2,7 +2,7 @@
 // Database connection settings for Game of Life project
 $dsn = 'pgsql:host=localhost;port=5432;dbname=gameoflife';
 $user = 'postgres';
-$pass = '123';
+$pass = 'Lion7564:19:';
 
 
 $options = [

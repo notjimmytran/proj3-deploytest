@@ -19,7 +19,7 @@ export function AuthProvider({ children }) {
 
   // Register function 
   async function register(userData) {
-    const response = await fetch('../server/api/auth/register.php', {
+    const response = await fetch('/api/auth/register.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(userData),
@@ -30,7 +30,7 @@ export function AuthProvider({ children }) {
   
   // Login function - update to store user in state and localStorage
   async function login(credentials) {
-    const response = await fetch('../server/api/auth/login.php', {
+    const response = await fetch('/api/auth/login.php', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(credentials),
@@ -48,7 +48,7 @@ export function AuthProvider({ children }) {
   
   // Logout function - update to clear state and localStorage
   async function logout() {
-    const response = await fetch('../server/api/auth/logout.php', {
+    const response = await fetch('/api/auth/logout.php', {
       method: 'POST',
       credentials: 'include'
     });

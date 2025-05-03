@@ -1,5 +1,11 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { 
+  startSession, 
+  endSession, 
+  saveGameState, 
+  loadGameState 
+} from '../services/gameservice'; // Update your import with the new functions
 
 // Add throttle utility at the top
 const throttle = (func, limit) => {
@@ -16,7 +22,6 @@ const throttle = (func, limit) => {
 const MIN_CELL_SIZE = 15;
 const MAX_CELL_SIZE = 40;
 const DEFAULT_CELL_SIZE = 25;
-const DEFAULT_GRID_SIZE = 50;
 
 // Predefined patterns
 const PATTERNS = {
@@ -67,13 +72,11 @@ const PATTERNS = {
   }
 };
 
-const VIEWPORT_SIZE = 40; // Increased viewport size for better coverage
-
 export default function Game() {
   const navigate = useNavigate();
   const user = JSON.parse(localStorage.getItem('user'));
   const containerRef = useRef(null);
-  const [gridSize, setGridSize] = useState({ rows: DEFAULT_GRID_SIZE, cols: DEFAULT_GRID_SIZE });
+
   const [cellSize, setCellSize] = useState(DEFAULT_CELL_SIZE);
   const [grid, setGrid] = useState(() => new Map());
   const [position, setPosition] = useState(() => ({ x: 0, y: 0 }));
@@ -83,6 +86,13 @@ export default function Game() {
   const [isRunning, setIsRunning] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [population, setPopulation] = useState(0);
+  // Changed default to false - AutoSave disabled by default
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+  // Add states for UI feedback
+  const [isLoading, setIsLoading] = useState(false);
+  const [message, setMessage] = useState(null);
+
   const runningRef = useRef(isRunning);
   runningRef.current = isRunning;
   const positionRef = useRef(position);
@@ -90,6 +100,15 @@ export default function Game() {
   const gridRef = useRef(grid);
   gridRef.current = grid;
   const rafRef = useRef(null);
+  // Session tracking refs
+  const generationRef = useRef(generation);
+  generationRef.current = generation;
+  const populationRef = useRef(population);
+  populationRef.current = population;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  // Message timeout ref
+  const messageTimeoutRef = useRef(null);
 
   // Pre-calculate container dimensions
   const containerDimensions = useCallback(() => {
@@ -119,10 +138,11 @@ export default function Game() {
     pointerEvents: isDragging ? 'none' : 'auto'
   }), []);
 
-  // Add a function to calculate pattern bounds
+  // Add a function to calculate pattern bounds (kept for potential future use, e.g., centering)
+  /* // Comment out the unused function
   const getPatternBounds = useCallback(() => {
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const [key] of grid) {
+    for (const [key] of gridRef.current) { // Use ref here to avoid dependency
       const [row, col] = key.split(',').map(Number);
       minX = Math.min(minX, col);
       maxX = Math.max(maxX, col);
@@ -130,27 +150,30 @@ export default function Game() {
       maxY = Math.max(maxY, row);
     }
     return { minX, maxX, minY, maxY };
-  }, [grid]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  */
+  // Note: getPatternBounds is kept for potential future use (e.g., centering patterns)
 
   const getVisibleCells = useCallback(() => {
     const { width, height } = containerDimensions();
     if (!width || !height) return { startRow: 0, endRow: 0, startCol: 0, endCol: 0 };
-    
+
     // Calculate cells needed to fill the container plus some padding
     const colsNeeded = Math.ceil(width / cellSize) + 4;
     const rowsNeeded = Math.ceil(height / cellSize) + 4;
-    
-    // Calculate center position in cell coordinates
-    const centerX = -position.x / cellSize;
-    const centerY = -position.y / cellSize;
-    
+
+    // Calculate center position in cell coordinates using the ref for stability
+    const currentPosition = positionRef.current;
+    const centerX = -currentPosition.x / cellSize;
+    const centerY = -currentPosition.y / cellSize;
+
     return {
       startRow: Math.floor(centerY - rowsNeeded/2),
       endRow: Math.ceil(centerY + rowsNeeded/2),
       startCol: Math.floor(centerX - colsNeeded/2),
       endCol: Math.ceil(centerX + colsNeeded/2)
     };
-  }, [cellSize, position, containerDimensions]);
+  }, [cellSize, containerDimensions]); // positionRef is stable, no need to include position state
 
   const toggleCell = useCallback((row, col) => {
     const key = getCellKey(row, col);
@@ -161,42 +184,65 @@ export default function Game() {
       } else {
         newGrid.set(key, true);
       }
+      // Update population immediately after toggling
+      setPopulation(newGrid.size);
       return newGrid;
     });
   }, [getCellKey]);
 
-  const handleMouseMove = useCallback((e) => {
-    if (dragStart.x === 0 && dragStart.y === 0) return;
+  // Helper function to show temporary messages
+  const showMessage = (text, type = 'success') => {
+    setMessage({ text, type });
     
-    const newX = e.clientX - dragStart.x;
-    const newY = e.clientY - dragStart.y;
-    const dx = newX - position.x;
-    const dy = newY - position.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    
-    // Only start dragging after moving a certain distance
-    if (distance > 5) {
-      setIsDragging(true);
-      
-      // Use RAF for smoother position updates
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
-      rafRef.current = requestAnimationFrame(() => {
-        setPosition({
-          x: newX,
-          y: newY
-        });
-        rafRef.current = null;
-      });
+    // Clear any existing timeout
+    if (messageTimeoutRef.current) {
+      clearTimeout(messageTimeoutRef.current);
     }
-    setDragDistance(distance);
-  }, [isDragging, dragStart, position]);
+    
+    // Set new timeout to clear the message after 5 seconds
+    messageTimeoutRef.current = setTimeout(() => {
+      setMessage(null);
+      messageTimeoutRef.current = null;
+    }, 5000);
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleMouseMove = useCallback(
+    throttle((e) => {
+      if (dragStart.x === 0 && dragStart.y === 0) return;
+
+      const newX = e.clientX - dragStart.x;
+      const newY = e.clientY - dragStart.y;
+      const currentPosition = positionRef.current; // Use ref for comparison
+      const dx = newX - currentPosition.x;
+      const dy = newY - currentPosition.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+
+      // Only start dragging after moving a certain distance
+      if (!isDragging && distance > 5) {
+        setIsDragging(true);
+      }
+
+      if (isDragging) { // Only update position if dragging
+        // Use RAF for smoother position updates
+        if (rafRef.current) {
+          cancelAnimationFrame(rafRef.current);
+        }
+        rafRef.current = requestAnimationFrame(() => {
+          setPosition({
+            x: newX,
+            y: newY
+          });
+          rafRef.current = null;
+        });
+      }
+      setDragDistance(distance);
+    }, 16), [dragStart, isDragging]); // Throttle limit 16ms (~60fps), dependencies are dragStart and isDragging
 
   const renderGrid = useCallback(() => {
     const { startRow, endRow, startCol, endCol } = getVisibleCells();
     const cells = [];
-    
+
     if (!containerRef.current) return cells;
 
     const containerWidth = containerRef.current.clientWidth;
@@ -209,40 +255,48 @@ export default function Game() {
     const visibleStartCol = startCol - padding;
     const visibleEndCol = endCol + padding;
 
-    // Pre-calculate common values
+    // Pre-calculate common values using refs for stability
     const halfContainerWidth = containerWidth / 2;
     const halfContainerHeight = containerHeight / 2;
     const currentPosition = positionRef.current;
     const currentGrid = gridRef.current;
+    const currentCellSize = cellSize; // Capture cellSize for this render pass
 
     for (let row = visibleStartRow; row < visibleEndRow; row++) {
       for (let col = visibleStartCol; col < visibleEndCol; col++) {
         const key = getCellKey(row, col);
-        const x = (col * cellSize) + currentPosition.x + halfContainerWidth;
-        const y = (row * cellSize) + currentPosition.y + halfContainerHeight;
+        const x = (col * currentCellSize) + currentPosition.x + halfContainerWidth;
+        const y = (row * currentCellSize) + currentPosition.y + halfContainerHeight;
 
         // Skip cells that would be outside the viewport
-        if (x < -cellSize || x > containerWidth + cellSize || 
-            y < -cellSize || y > containerHeight + cellSize) {
+        if (x < -currentCellSize || x > containerWidth + currentCellSize ||
+            y < -currentCellSize || y > containerHeight + currentCellSize) {
           continue;
         }
 
         cells.push(
           <div
             key={key}
-            style={getCellStyle(x, y, currentGrid.has(key), cellSize, isDragging)}
+            // Intentionally not adding onClick here to avoid performance issues with many cells
+            // Click handling is done on the container
+            style={getCellStyle(x, y, currentGrid.has(key), currentCellSize, isDragging)}
           />
         );
       }
     }
     return cells;
-  }, [cellSize, isDragging, getVisibleCells, getCellStyle, getCellKey]);
+  }, [cellSize, isDragging, getVisibleCells, getCellStyle, getCellKey]); // Dependencies are correct
 
   // Cleanup RAF on unmount
   useEffect(() => {
     return () => {
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
+      }
+      
+      // Also clear any message timeout
+      if (messageTimeoutRef.current) {
+        clearTimeout(messageTimeoutRef.current);
       }
     };
   }, []);
@@ -253,12 +307,12 @@ export default function Game() {
     setGrid(g => {
       const newGrid = new Map();
       const activeCells = new Set();
-      
+
       // Collect all active cells and their neighbors
       for (const [key] of g) {
         const [row, col] = key.split(',').map(Number);
         activeCells.add(key);
-        
+
         // Add all neighbors to check
         for (let i = -1; i <= 1; i++) {
           for (let j = -1; j <= 1; j++) {
@@ -292,247 +346,234 @@ export default function Game() {
         }
       }
 
+      // Update population state after calculating the new grid
+      setPopulation(newGrid.size);
       return newGrid;
     });
 
     setGeneration(g => g + 1);
-    setGrid(currentGrid => {
-      setPopulation(currentGrid.size);
-      return currentGrid;
-    });
 
+    // Use setTimeout for the next step
     setTimeout(runSimulation, 100);
-  }, []);
+  }, [getCellKey]); // Removed setPopulation from here as it's handled within setGrid
 
   const handleMouseDown = (e) => {
     if (e.button === 0) { // Left click
-      setIsDragging(false); // Start as not dragging
+      setIsDragging(false); // Reset dragging state
       setDragStart({
-        x: e.clientX - position.x,
-        y: e.clientY - position.y
+        x: e.clientX - positionRef.current.x, // Use ref for initial position
+        y: e.clientY - positionRef.current.y
       });
-      setDragDistance(0);
+      setDragDistance(0); // Reset drag distance
+      // Add mousemove listener to the window for smoother dragging
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUpGlobal, { once: true }); // Use once to auto-remove
     }
   };
 
-  const handleMouseUp = (e) => {
-    // Only activate cell if we never started dragging
+  // Separate mouse up handler for global listener
+  const handleMouseUpGlobal = useCallback((e) => {
+    window.removeEventListener('mousemove', handleMouseMove); // Clean up listener
+
+    // Only toggle cell if it was a click (not a drag)
     if (!isDragging && dragDistance <= 5) {
       if (!containerRef.current) return;
-      
+
       const containerRect = containerRef.current.getBoundingClientRect();
       const containerWidth = containerRef.current.clientWidth;
       const containerHeight = containerRef.current.clientHeight;
-      
+
       // Calculate relative position within the container
       const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
       const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
-      
+
       // Calculate cell coordinates based on position and cell size
-      const col = Math.floor((relativeX - position.x) / cellSize);
-      const row = Math.floor((relativeY - position.y) / cellSize);
-      
-      // No need to wrap coordinates since we want an infinite grid
+      const col = Math.floor((relativeX - positionRef.current.x) / cellSize); // Use ref
+      const row = Math.floor((relativeY - positionRef.current.y) / cellSize); // Use ref
+
       toggleCell(row, col);
     }
-    
-    setIsDragging(false);
-    setDragStart({ x: 0, y: 0 });
-    setDragDistance(0);
-  };
 
-  const handleCellMouseDown = useCallback((row, col, e) => {
-    // Only handle cell activation if we're not already dragging
-    if (!isDragging && dragDistance <= 5) {
-      const wrappedRow = ((row % gridSize.rows) + gridSize.rows) % gridSize.rows;
-      const wrappedCol = ((col % gridSize.cols) + gridSize.cols) % gridSize.cols;
-      toggleCell(wrappedRow, wrappedCol);
-    }
-  }, [isDragging, gridSize.rows, gridSize.cols, toggleCell, dragDistance]);
+    // Reset dragging state regardless
+    setIsDragging(false);
+    setDragStart({ x: 0, y: 0 }); // Reset drag start
+    setDragDistance(0);
+  }, [isDragging, dragDistance, cellSize, toggleCell, handleMouseMove]); // Added handleMouseMove to dependencies
 
   const loadPattern = useCallback((patternName) => {
     if (!patternName || !containerRef.current) return;
-    
-    const pattern = PATTERNS[patternName].pattern;
-    const newGrid = new Map();
-    
-    // Get container dimensions
-    const containerWidth = containerRef.current.clientWidth;
-    const containerHeight = containerRef.current.clientHeight;
-    
-    // Calculate pattern dimensions
-    const patternWidth = pattern[0].length;
-    const patternHeight = pattern.length;
 
-    // Place pattern at (0,0) and let the position offset handle centering
+    const patternData = PATTERNS[patternName];
+    if (!patternData) return;
+
+    const pattern = patternData.pattern;
+    const newGrid = new Map();
+
+
+
+    // Calculate pattern dimensions
+    const patternHeight = pattern.length;
+    const patternWidth = pattern[0].length;
+
+    // Calculate center offset for the pattern
+    const startRow = -Math.floor(patternHeight / 2);
+    const startCol = -Math.floor(patternWidth / 2);
+
+    // Place pattern relative to (0,0)
     for (let i = 0; i < patternHeight; i++) {
       for (let j = 0; j < patternWidth; j++) {
         if (pattern[i][j] === 1) {
-          newGrid.set(getCellKey(i - Math.floor(patternHeight/2), j - Math.floor(patternWidth/2)), true);
+          newGrid.set(getCellKey(startRow + i, startCol + j), true);
         }
       }
     }
-    
+
     setGrid(newGrid);
     setGeneration(0);
     setPopulation(newGrid.size);
 
-    // Calculate the position to center the pattern
-    // We multiply by cellSize since we need to convert grid coordinates to pixels
+    // Center the view on the pattern's approximate center (0,0 in grid coordinates)
     setPosition({
-      x: (containerWidth / 2) - ((patternWidth / 2) * cellSize),
-      y: (containerHeight / 2) - ((patternHeight / 2) * cellSize)
+      x: 0,
+      y: 0
     });
-  }, [getCellKey, cellSize]);
+  }, [getCellKey]); // Removed cellSize dependency
 
-  // Center grid on mount and cell size change
+  // Center grid view initially & Start Session
   useEffect(() => {
+    // Center view
     if (containerRef.current) {
-      const containerWidth = containerRef.current.clientWidth;
-      const containerHeight = containerRef.current.clientHeight;
-      
       setPosition({
-        x: -(gridSize.cols * cellSize) / 2 + containerWidth / 2,
-        y: -(gridSize.rows * cellSize) / 2 + containerHeight / 2
+        x: 0, // Start at (0,0) in grid coordinates for a cleaner initial view
+        y: 0
       });
     }
-  }, [cellSize, gridSize.cols, gridSize.rows]);
 
-  // Add mouse event listeners for drag handling
+    // Start game session if user is logged in
+    if (user?.id) {
+      console.log("Attempting to start session for user:", user.id);
+      startSession().then(response => {
+        if (response.success && response.sessionId) {
+          console.log("Session started successfully, ID:", response.sessionId);
+          setSessionId(response.sessionId);
+        } else {
+          console.error("Failed to start session:", response.error);
+          showMessage("Failed to start session: " + (response.error || "Unknown error"), "error");
+        }
+      }).catch(error => {
+         console.error("Error calling startSession:", error);
+         showMessage("Network error starting session", "error");
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]); // Run only when user ID changes (effectively on mount for a logged-in user)
+
+  // End Session on Unmount
   useEffect(() => {
-    const handleGlobalMouseUp = () => {
-      setIsDragging(false);
-    };
-
-    window.addEventListener('mouseup', handleGlobalMouseUp);
-    window.addEventListener('mouseleave', handleGlobalMouseUp);
-    
+    // Return a cleanup function that will be called when the component unmounts
     return () => {
-      window.removeEventListener('mouseup', handleGlobalMouseUp);
-      window.removeEventListener('mouseleave', handleGlobalMouseUp);
+      // Use the ref here to get the latest sessionId
+      const currentSessionId = sessionIdRef.current;
+      if (currentSessionId && user?.id) {
+        console.log(`Ending session ${currentSessionId} on unmount.`);
+        // Use refs for generation and population to get the latest values
+        endSession(currentSessionId, generationRef.current, populationRef.current)
+          .then(response => {
+            if (response.success) {
+              console.log(`Session ${currentSessionId} ended successfully.`);
+            } else {
+              console.error(`Failed to end session ${currentSessionId}:`, response.error);
+            }
+          }).catch(error => {
+             console.error(`Error calling endSession for ${currentSessionId}:`, error);
+          });
+      }
     };
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]); // Depend only on user.id to set up/tear down the effect correctly
 
   const handleZoom = useCallback((zoomIn) => {
     setCellSize(prevSize => {
-      const newSize = zoomIn ? 
-        Math.min(prevSize + 5, MAX_CELL_SIZE) : 
+      const newSize = zoomIn ?
+        Math.min(prevSize + 5, MAX_CELL_SIZE) :
         Math.max(prevSize - 5, MIN_CELL_SIZE);
 
-      // If zooming out, maintain the pattern's position relative to the viewport
-      if (!zoomIn && containerRef.current) {
+      if (newSize === prevSize) return prevSize; // No change
+
+      if (containerRef.current) {
         const containerWidth = containerRef.current.clientWidth;
         const containerHeight = containerRef.current.clientHeight;
-        
-        // Calculate the current center of the viewport
-        const currentCenterX = -position.x / prevSize;
-        const currentCenterY = -position.y / prevSize;
-        
-        // Calculate the new position to maintain the same center point
-        let newX = -(currentCenterX * newSize) + containerWidth / 2;
-        let newY = -(currentCenterY * newSize) + containerHeight / 2;
 
-        // If we're at minimum zoom, ensure the pattern stays centered
-        if (newSize === MIN_CELL_SIZE) {
-          // Find the center of the pattern
-          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-          for (const [key] of grid) {
-            const [row, col] = key.split(',').map(Number);
-            minX = Math.min(minX, col);
-            maxX = Math.max(maxX, col);
-            minY = Math.min(minY, row);
-            maxY = Math.max(maxY, row);
-          }
+        // Calculate the grid coordinate at the center of the viewport BEFORE zoom
+        const viewCenterX = (containerWidth / 2 - positionRef.current.x) / prevSize;
+        const viewCenterY = (containerHeight / 2 - positionRef.current.y) / prevSize;
 
-          if (minX !== Infinity) {
-            const patternCenterX = (minX + maxX) / 2;
-            const patternCenterY = (minY + maxY) / 2;
-            
-            newX = -(patternCenterX * newSize) + containerWidth / 2;
-            newY = -(patternCenterY * newSize) + containerHeight / 2;
-          }
-        }
-        
-        setPosition({
-          x: newX,
-          y: newY
-        });
+        // Calculate the new position to keep the same grid coordinate at the center AFTER zoom
+        const newX = containerWidth / 2 - viewCenterX * newSize;
+        const newY = containerHeight / 2 - viewCenterY * newSize;
+
+        setPosition({ x: newX, y: newY });
       }
 
       return newSize;
     });
-  }, [position, grid]);
+  }, []); // Removed dependencies as refs are used and setPosition updates positionRef
 
   const resetGrid = () => {
     setGrid(new Map());
     setGeneration(0);
     setIsRunning(false);
     setPopulation(0);
+    // Reset position to (0,0) in grid coordinates
+    if (containerRef.current) {
+      setPosition({ x: 0, y: 0 });
+    }
+    setCellSize(DEFAULT_CELL_SIZE);
   };
 
   const handleNextGeneration = useCallback(() => {
+    // This function essentially performs one step of runSimulation
     setGrid(g => {
       const newGrid = new Map();
       const activeCells = new Set();
-      
-      // Collect all active cells and their neighbors
       for (const [key] of g) {
         const [row, col] = key.split(',').map(Number);
         activeCells.add(key);
-        
-        // Add all neighbors to check
         for (let i = -1; i <= 1; i++) {
           for (let j = -1; j <= 1; j++) {
             if (i === 0 && j === 0) continue;
-            const neighborKey = getCellKey(row + i, col + j);
-            activeCells.add(neighborKey);
+            activeCells.add(getCellKey(row + i, col + j));
           }
         }
       }
-
-      // Check each cell that needs updating
       for (const key of activeCells) {
         const [row, col] = key.split(',').map(Number);
         let neighbors = 0;
-
-        // Count neighbors
         for (let i = -1; i <= 1; i++) {
           for (let j = -1; j <= 1; j++) {
             if (i === 0 && j === 0) continue;
-            const neighborKey = getCellKey(row + i, col + j);
-            if (g.has(neighborKey)) neighbors++;
+            if (g.has(getCellKey(row + i, col + j))) neighbors++;
           }
         }
-
-        // Apply Game of Life rules
         const isAlive = g.has(key);
-        if (isAlive && (neighbors === 2 || neighbors === 3)) {
-          newGrid.set(key, true);
-        } else if (!isAlive && neighbors === 3) {
+        if ((isAlive && (neighbors === 2 || neighbors === 3)) || (!isAlive && neighbors === 3)) {
           newGrid.set(key, true);
         }
       }
-
+      setPopulation(newGrid.size); // Update population
       return newGrid;
     });
-
     setGeneration(g => g + 1);
-    setGrid(currentGrid => {
-      setPopulation(currentGrid.size);
-      return currentGrid;
-    });
-  }, [getCellKey]);
+  }, [getCellKey]); // Removed setPopulation dependency
 
   const advance23Generations = useCallback(() => {
-    // Store current running state
-    const wasRunning = isRunning;
+    const wasRunning = runningRef.current; // Use ref
     if (wasRunning) {
-      setIsRunning(false);
+      setIsRunning(false); // This will update runningRef.current via its useEffect
     }
 
-    // Advance 23 generations with delay
     let currentStep = 0;
-    const stepInterval = 60; // 100ms between steps
+    const stepInterval = 60;
 
     const advanceStep = () => {
       if (currentStep < 23) {
@@ -540,26 +581,168 @@ export default function Game() {
         currentStep++;
         setTimeout(advanceStep, stepInterval);
       } else {
-        // Restore previous running state
         if (wasRunning) {
-          setIsRunning(true);
-          runningRef.current = true;
-          runSimulation();
+          setIsRunning(true); // This will update runningRef.current and trigger runSimulation
         }
       }
     };
 
     advanceStep();
-  }, [handleNextGeneration, isRunning, runSimulation]);
+  }, [handleNextGeneration]); // Removed isRunning and runSimulation dependencies
+
+  // Save state to server
+  const handleSaveState = async () => {
+    if (!user?.id) return;
+    
+    setIsLoading(true);
+    setMessage(null);
+    
+    try {
+      // Convert grid Map to array for easier storage
+      const gridArray = Array.from(grid.keys());
+      
+      // Create state object with all necessary data
+      const gameState = {
+        grid: gridArray,
+        position,
+        cellSize
+      };
+      
+      const response = await saveGameState(gameState, generation, population);
+      
+      if (response.success) {
+        showMessage('Game state saved successfully!', 'success');
+      } else {
+        showMessage('Failed to save: ' + (response.error || 'Unknown error'), 'error');
+      }
+    } catch (error) {
+      console.error('Error saving game state:', error);
+      showMessage('Error saving game state', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Load state from server
+  const handleLoadState = async () => {
+    if (!user?.id) return;
+    
+    setIsLoading(true);
+    setMessage(null);
+    
+    try {
+      const response = await loadGameState();
+      
+      if (response.success && response.state) {
+        // Parse the saved state
+        const savedState = JSON.parse(response.state);
+        
+        // Restore grid
+        const restoredGrid = new Map();
+        savedState.grid.forEach(key => restoredGrid.set(key, true));
+        
+        // Restore all state
+        setGrid(restoredGrid);
+        setPosition(savedState.position);
+        setCellSize(savedState.cellSize);
+        setGeneration(response.generations || 0);
+        setPopulation(restoredGrid.size);
+        
+        showMessage('Game state loaded successfully!', 'success');
+      } else {
+        showMessage(response.message || 'No saved state found.', 'info');
+      }
+    } catch (error) {
+      console.error('Error loading game state:', error);
+      showMessage('Error loading game state', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // REMOVED the localStorage auto-load effect since we want to start with an empty board
+
+  // Server auto-save effect (only if enabled)
+  useEffect(() => {
+    if (!autoSaveEnabled || !user?.id || grid.size === 0) return;
+    
+    // Use debounce to avoid excessive calls to the server
+    const handler = setTimeout(() => {
+      // Convert grid Map to array for easier storage
+      const gridArray = Array.from(grid.keys());
+      
+      // Create state object with necessary data
+      const gameState = {
+        grid: gridArray,
+        position,
+        cellSize
+      };
+      
+      // Call the server-side save function
+      saveGameState(gameState, generation, population)
+        .then(response => {
+          if (!response.success) {
+            console.error('Auto-save failed:', response.error);
+          }
+        })
+        .catch(error => {
+          console.error('Auto-save error:', error);
+        });
+    }, 2000); // Longer debounce (2 seconds) for server calls
+    
+    return () => clearTimeout(handler);
+  }, [grid, generation, position, cellSize, user?.id, autoSaveEnabled, population]);
+
+  // Effect to start/stop simulation when isRunning changes
+  useEffect(() => {
+    if (isRunning) {
+      runningRef.current = true;
+      runSimulation();
+    } else {
+      runningRef.current = false;
+      // No need to explicitly stop timeout here, runSimulation checks runningRef.current
+    }
+  }, [isRunning, runSimulation]);
 
   if (!user) {
     navigate('/login');
-    return null;
+    return null; // Render nothing while redirecting
   }
 
-  const handleLogout = () => {
+  // Modified handleLogout to end session
+  const handleLogout = async () => {
+    // End the current session before logging out
+    if (sessionId && user?.id) {
+      console.log(`Ending session ${sessionId} on logout.`);
+      try {
+        const response = await endSession(sessionId, generation, population);
+        if (response.success) {
+          console.log(`Session ${sessionId} ended successfully before logout.`);
+        } else {
+          console.error(`Failed to end session ${sessionId} before logout:`, response.error);
+        }
+      } catch (error) {
+         console.error(`Error calling endSession for ${sessionId} during logout:`, error);
+      }
+    }
+
+    // Proceed with logout
     localStorage.removeItem('user');
+    setSessionId(null);
     navigate('/login');
+  };
+
+  // Define a base button style to avoid repetition
+  const controlButtonStyle = {
+    padding: '0.5rem 1rem',
+    borderRadius: '8px',
+    border: 'none',
+    color: 'white',
+    cursor: 'pointer',
+    fontSize: '0.9rem',
+    fontWeight: '500',
+    transition: 'background-color 0.2s ease, transform 0.1s ease',
+    minWidth: '100px',
   };
 
   return (
@@ -573,6 +756,7 @@ export default function Game() {
       overflow: 'hidden',
       boxSizing: 'border-box'
     }}>
+      {/* Main container */}
       <div style={{
         maxWidth: '1200px',
         margin: '0 auto',
@@ -582,50 +766,52 @@ export default function Game() {
         flexDirection: 'column',
         boxSizing: 'border-box'
       }}>
+        {/* Header: Stats and Logout */}
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
           marginBottom: '0.75rem',
-          flexShrink: 0
+          flexShrink: 0,
+          gap: '1rem'
         }}>
-          <div style={{ 
-            background: 'rgba(26, 26, 26, 0.5)',
+          {/* Stats Box */}
+          <div style={{
+            background: 'rgba(26, 26, 26, 0.6)',
             padding: '0.75rem 1.25rem',
             borderRadius: '12px',
-            boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
-            backdropFilter: 'blur(8px)',
-            border: '1px solid rgba(255, 255, 255, 0.1)'
+            boxShadow: '0 4px 15px rgba(0, 0, 0, 0.2)',
+            backdropFilter: 'blur(10px)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            display: 'flex',
+            gap: '1.5rem'
           }}>
-            <div style={{ 
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              marginBottom: '0.25rem'
-            }}>
-              <span style={{ 
+            {/* Generation */}
+            <div style={{ textAlign: 'center' }}>
+              <span style={{
                 color: '#90e0ef',
-                fontSize: '1rem',
-                fontWeight: '500'
+                fontSize: '0.8rem',
+                fontWeight: '500',
+                display: 'block',
+                marginBottom: '0.1rem'
               }}>Generation</span>
-              <span style={{ 
+              <span style={{
                 color: '#06d6a0',
                 fontSize: '1.2rem',
                 fontWeight: '600',
                 fontFamily: 'monospace'
               }}>{generation}</span>
             </div>
-            <div style={{ 
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}>
-              <span style={{ 
+            {/* Population */}
+            <div style={{ textAlign: 'center' }}>
+              <span style={{
                 color: '#90e0ef',
-                fontSize: '1rem',
-                fontWeight: '500'
+                fontSize: '0.8rem',
+                fontWeight: '500',
+                display: 'block',
+                marginBottom: '0.1rem'
               }}>Population</span>
-              <span style={{ 
+              <span style={{
                 color: '#06d6a0',
                 fontSize: '1.2rem',
                 fontWeight: '600',
@@ -633,24 +819,45 @@ export default function Game() {
               }}>{population}</span>
             </div>
           </div>
+          
+          {/* Message display */}
+          {message && (
+            <div style={{
+              background: message.type === 'error' ? 'rgba(255, 104, 107, 0.2)' : 
+                          message.type === 'info' ? 'rgba(10, 239, 255, 0.2)' : 
+                          'rgba(6, 214, 160, 0.2)',
+              color: message.type === 'error' ? '#ff686b' : 
+                     message.type === 'info' ? '#0aefff' : 
+                     '#06d6a0',
+              padding: '0.5rem 1rem',
+              borderRadius: '8px',
+              fontSize: '0.9rem',
+              flex: 1,
+              textAlign: 'center',
+              maxWidth: '400px'
+            }}>
+              {message.text}
+            </div>
+          )}
+          
+          {/* Logout Button */}
           <button
             onClick={handleLogout}
             style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              border: 'none',
+              ...controlButtonStyle,
               background: '#ff686b',
-              color: 'white',
-              cursor: 'pointer',
-              height: 'fit-content',
+              padding: '0.6rem 1.2rem',
               alignSelf: 'center'
             }}
+            onMouseOver={e => e.currentTarget.style.backgroundColor = '#e05558'}
+            onMouseOut={e => e.currentTarget.style.backgroundColor = '#ff686b'}
           >
             Logout
           </button>
         </div>
 
-        <div 
+        {/* Game Grid Container */}
+        <div
           ref={containerRef}
           style={{
             width: '100%',
@@ -660,146 +867,217 @@ export default function Game() {
             marginBottom: '0.75rem',
             background: '#1a1a1a',
             borderRadius: '12px',
-            minHeight: 0
+            minHeight: 0,
+            cursor: isDragging ? 'grabbing' : 'grab'
           }}
           onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
         >
+          {/* Rendered Grid Cells */}
           <div style={{
             position: 'absolute',
-            inset: 0,
-            cursor: isDragging ? 'grabbing' : 'grab'
+            width: '100%',
+            height: '100%',
+            top: 0,
+            left: 0,
           }}>
             {renderGrid()}
           </div>
         </div>
 
+        {/* Controls Bar */}
         <div style={{
           display: 'flex',
-          gap: '1rem',
+          gap: '0.75rem',
           justifyContent: 'center',
+          alignItems: 'center',
           flexWrap: 'wrap',
           padding: '0.75rem',
-          background: 'rgba(26, 26, 26, 0.5)',
+          background: 'rgba(26, 26, 26, 0.6)',
           borderRadius: '12px',
-          marginBottom: '0'
+          backdropFilter: 'blur(10px)',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          boxShadow: '0 4px 15px rgba(0, 0, 0, 0.2)',
+          flexShrink: 0
         }}>
+          {/* Zoom Buttons */}
           <button
             onClick={() => handleZoom(false)}
             style={{
-              padding: '0.5rem',
-              borderRadius: '8px',
-              border: 'none',
+              ...controlButtonStyle,
               background: '#0aefff',
-              color: 'white',
-              cursor: 'pointer',
-              width: '32px',
-              height: '32px',
+              color: '#073b4c',
+              width: '36px',
+              height: '36px',
+              padding: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               fontSize: '1.2rem',
-              fontWeight: 'bold'
+              fontWeight: 'bold',
+              minWidth: 'auto'
             }}
+            onMouseOver={e => e.currentTarget.style.backgroundColor = '#00dcec'}
+            onMouseOut={e => e.currentTarget.style.backgroundColor = '#0aefff'}
           >
             -
           </button>
           <button
             onClick={() => handleZoom(true)}
             style={{
-              padding: '0.5rem',
-              borderRadius: '8px',
-              border: 'none',
+              ...controlButtonStyle,
               background: '#0aefff',
-              color: 'white',
-              cursor: 'pointer',
-              width: '32px',
-              height: '32px',
+              color: '#073b4c',
+              width: '36px',
+              height: '36px',
+              padding: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               fontSize: '1.2rem',
-              fontWeight: 'bold'
+              fontWeight: 'bold',
+              minWidth: 'auto'
             }}
+            onMouseOver={e => e.currentTarget.style.backgroundColor = '#00dcec'}
+            onMouseOut={e => e.currentTarget.style.backgroundColor = '#0aefff'}
           >
             +
           </button>
+
+          {/* Start/Stop Button */}
           <button
-            onClick={() => {
-              setIsRunning(!isRunning);
-              if (!isRunning) {
-                runningRef.current = true;
-                runSimulation();
-              }
-            }}
+            onClick={() => setIsRunning(!isRunning)}
             style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              border: 'none',
+              ...controlButtonStyle,
               background: isRunning ? '#ff686b' : '#06d6a0',
-              color: 'white',
-              cursor: 'pointer',
-              minWidth: '120px'
+              minWidth: '100px'
             }}
+            onMouseOver={e => e.currentTarget.style.backgroundColor = isRunning ? '#e05558' : '#05b387'}
+            onMouseOut={e => e.currentTarget.style.backgroundColor = isRunning ? '#ff686b' : '#06d6a0'}
           >
             {isRunning ? 'Stop' : 'Start'}
           </button>
+
+          {/* Next Generation Button */}
           <button
             onClick={handleNextGeneration}
+            disabled={isRunning}
             style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              border: 'none',
+              ...controlButtonStyle,
               background: '#0aefff',
-              color: 'white',
-              cursor: 'pointer',
-              minWidth: '120px'
+              color: '#073b4c',
+              minWidth: '100px',
+              opacity: isRunning ? 0.5 : 1,
+              cursor: isRunning ? 'not-allowed' : 'pointer'
             }}
+            onMouseOver={e => !isRunning && (e.currentTarget.style.backgroundColor = '#00dcec')}
+            onMouseOut={e => !isRunning && (e.currentTarget.style.backgroundColor = '#0aefff')}
           >
-            Next Generation
+            Next Gen
           </button>
+
+          {/* +23 Generations Button */}
           <button
             onClick={advance23Generations}
+            disabled={isRunning}
             style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              border: 'none',
+              ...controlButtonStyle,
               background: '#0aefff',
-              color: 'white',
-              cursor: 'pointer',
-              minWidth: '120px'
+              color: '#073b4c',
+              minWidth: '100px',
+              opacity: isRunning ? 0.5 : 1,
+              cursor: isRunning ? 'not-allowed' : 'pointer'
             }}
+            onMouseOver={e => !isRunning && (e.currentTarget.style.backgroundColor = '#00dcec')}
+            onMouseOut={e => !isRunning && (e.currentTarget.style.backgroundColor = '#0aefff')}
           >
-            +23 Generations
+            +23 Gens
           </button>
+
+          {/* Reset Button */}
           <button
             onClick={resetGrid}
             style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              border: 'none',
+              ...controlButtonStyle,
               background: '#ff686b',
-              color: 'white',
-              cursor: 'pointer',
-              minWidth: '120px'
+              minWidth: '100px'
             }}
+            onMouseOver={e => e.currentTarget.style.backgroundColor = '#e05558'}
+            onMouseOut={e => e.currentTarget.style.backgroundColor = '#ff686b'}
           >
             Reset
           </button>
-          <select
-            onChange={(e) => loadPattern(e.target.value)}
+
+          {/* Auto-Save Toggle Button - Default to OFF */}
+          <button
+            onClick={() => setAutoSaveEnabled(!autoSaveEnabled)}
             style={{
-              padding: '0.5rem 1rem',
-              borderRadius: '8px',
-              border: 'none',
-              background: '#2a2a2a',
-              color: 'white',
-              cursor: 'pointer',
+              ...controlButtonStyle,
+              background: autoSaveEnabled ? '#06d6a0' : '#ff686b',
               minWidth: '120px'
             }}
+            onMouseOver={e => e.currentTarget.style.backgroundColor = autoSaveEnabled ? '#05b387' : '#e05558'}
+            onMouseOut={e => e.currentTarget.style.backgroundColor = autoSaveEnabled ? '#06d6a0' : '#ff686b'}
           >
-            <option value="">Select Pattern</option>
+            {autoSaveEnabled ? 'AutoSave: ON' : 'AutoSave: OFF'}
+          </button>
+
+          {/* Server Save Button */}
+          <button
+            onClick={handleSaveState}
+            disabled={isLoading}
+            style={{
+              ...controlButtonStyle,
+              background: '#0aefff',
+              color: '#073b4c',
+              minWidth: '100px',
+              opacity: isLoading ? 0.7 : 1,
+              cursor: isLoading ? 'wait' : 'pointer'
+            }}
+            onMouseOver={e => !isLoading && (e.currentTarget.style.backgroundColor = '#00dcec')}
+            onMouseOut={e => !isLoading && (e.currentTarget.style.backgroundColor = '#0aefff')}
+          >
+            {isLoading ? 'Saving...' : 'Save Game'}
+          </button>
+
+          {/* Server Load Button */}
+          <button
+            onClick={handleLoadState}
+            disabled={isLoading}
+            style={{
+              ...controlButtonStyle,
+              background: '#f9c74f',
+              color: '#073b4c',
+              minWidth: '100px',
+              opacity: isLoading ? 0.7 : 1, 
+              cursor: isLoading ? 'wait' : 'pointer'
+            }}
+            onMouseOver={e => !isLoading && (e.currentTarget.style.backgroundColor = '#f3b529')}
+            onMouseOut={e => !isLoading && (e.currentTarget.style.backgroundColor = '#f9c74f')}
+          >
+            {isLoading ? 'Loading...' : 'Load Last Game'}
+          </button>
+
+          {/* Pattern Selector */}
+          <select
+            onChange={(e) => loadPattern(e.target.value)}
+            defaultValue=""
+            style={{
+              ...controlButtonStyle,
+              background: '#2a2a2a',
+              color: 'white',
+              padding: '0.5rem 1rem',
+              minWidth: '150px',
+              height: '36px',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
+              appearance: 'none',
+              backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23ffffff%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.4-12.8z%22%2F%3E%3C%2Fsvg%3E")',
+              backgroundRepeat: 'no-repeat',
+              backgroundPosition: 'right 0.7rem top 50%',
+              backgroundSize: '0.65rem auto',
+              paddingRight: '2.5rem'
+            }}
+          >
+            <option value="" disabled>Select Pattern</option>
             <optgroup label="Still Life">
               <option value="block">Block</option>
               <option value="beehive">Beehive</option>
