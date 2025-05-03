@@ -6,7 +6,7 @@ try {
     
     $dsn = 'pgsql:host=localhost;port=5432;dbname=gameoflife';
     $user = 'postgres';
-    $pass = '1223:';
+    $pass = 
 
     $options = [
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,

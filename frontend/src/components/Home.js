@@ -147,13 +147,14 @@ export default function Home() {
       </style>
       
       <div style={styles.content}>
-        <h1 style={styles.title}>Conway's Game of Life</h1>
+        <h1 style={styles.title}>PeachTri Dish!</h1>
         <h2 style={styles.subtitle}>By: Jonathan Ermias, Kayla Clark, Jimmy Tran</h2>
         
         <p style={styles.description}>
           Welcome to our interactive <span style={styles.highlight}>Game of Life</span> project! 
           Experience the beauty of cellular automata as you watch patterns evolve, 
-          interact with living cells, and discover the emergent complexity from simple rules.
+          interact with living cells, and discover the emergent complexity from simple rules. This Game
+          models <span style={styles.highlight}>Conway's Game of Life</span>. . . Enjoy!
         </p>
 
         <div style={styles.buttonContainer}>
