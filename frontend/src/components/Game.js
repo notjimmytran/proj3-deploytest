@@ -111,12 +111,19 @@ export default function Game() {
           return cell;
         })
       );
-      setGeneration(prev => prev + 1);
-      const newPopulation = nextGen.reduce((sum, row) => 
+      return nextGen;
+    });
+
+    // Move generation increment outside of setGrid
+    setGeneration(g => g + 1);
+    
+    // Update population after grid update
+    setGrid(currentGrid => {
+      const newPopulation = currentGrid.reduce((sum, row) => 
         sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
       );
       setPopulation(newPopulation);
-      return nextGen;
+      return currentGrid;
     });
 
     setTimeout(runSimulation, 100);
@@ -171,9 +178,57 @@ export default function Game() {
         );
         return nextGen;
       });
+      
+      // Increment generation after grid update
       setGeneration(g => g + 1);
+      
+      // Update population after all updates
+      setGrid(currentGrid => {
+        const newPopulation = currentGrid.reduce((sum, row) => 
+          sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
+        );
+        setPopulation(newPopulation);
+        return currentGrid;
+      });
+      
       await new Promise(resolve => setTimeout(resolve, 50));
     }
+  };
+
+  // Update the Next Generation button handler too
+  const handleNextGeneration = () => {
+    setIsRunning(false);
+    setGrid(g => {
+      const nextGen = g.map((row, i) =>
+        row.map((cell, j) => {
+          let neighbors = 0;
+          for (let di = -1; di <= 1; di++) {
+            for (let dj = -1; dj <= 1; dj++) {
+              if (di === 0 && dj === 0) continue;
+              const newI = (i + di + gridSize.rows) % gridSize.rows;
+              const newJ = (j + dj + gridSize.cols) % gridSize.cols;
+              if (g[newI][newJ]) neighbors++;
+            }
+          }
+          if (cell && (neighbors < 2 || neighbors > 3)) return false;
+          if (!cell && neighbors === 3) return true;
+          return cell;
+        })
+      );
+      return nextGen;
+    });
+    
+    // Increment generation after grid update
+    setGeneration(g => g + 1);
+    
+    // Update population after all updates
+    setGrid(currentGrid => {
+      const newPopulation = currentGrid.reduce((sum, row) => 
+        sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
+      );
+      setPopulation(newPopulation);
+      return currentGrid;
+    });
   };
 
   if (!user) {
@@ -326,33 +381,7 @@ export default function Game() {
             {isRunning ? 'Stop' : 'Start'}
           </button>
           <button
-            onClick={() => {
-              setIsRunning(false);
-              setGrid(g => {
-                const nextGen = g.map((row, i) =>
-                  row.map((cell, j) => {
-                    let neighbors = 0;
-                    for (let di = -1; di <= 1; di++) {
-                      for (let dj = -1; dj <= 1; dj++) {
-                        if (di === 0 && dj === 0) continue;
-                        const newI = (i + di + gridSize.rows) % gridSize.rows;
-                        const newJ = (j + dj + gridSize.cols) % gridSize.cols;
-                        if (g[newI][newJ]) neighbors++;
-                      }
-                    }
-                    if (cell && (neighbors < 2 || neighbors > 3)) return false;
-                    if (!cell && neighbors === 3) return true;
-                    return cell;
-                  })
-                );
-                const newPopulation = nextGen.reduce((sum, row) => 
-                  sum + row.reduce((rowSum, cell) => rowSum + (cell ? 1 : 0), 0), 0
-                );
-                setPopulation(newPopulation);
-                setGeneration(prev => prev + 1);
-                return nextGen;
-              });
-            }}
+            onClick={handleNextGeneration}
             style={{
               padding: '0.5rem 1rem',
               borderRadius: '8px',
