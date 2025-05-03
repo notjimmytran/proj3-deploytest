@@ -92,11 +92,13 @@ export default function Game() {
   // Add states for UI feedback
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const positionRef = useRef({ x: 0, y: 0 });
+  const clickTimeoutRef = useRef(null);
 
   const runningRef = useRef(isRunning);
   runningRef.current = isRunning;
-  const positionRef = useRef(position);
-  positionRef.current = position;
   const gridRef = useRef(grid);
   gridRef.current = grid;
   const rafRef = useRef(null);
@@ -206,38 +208,160 @@ export default function Game() {
     }, 5000);
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const handleMouseDown = (e) => {
+    // Clear any pending click timeout
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+
+    if (e.button === 1 || e.button === 2) { // Middle click or right click for panning
+      setIsPanning(true);
+      setPanStart({
+        x: e.clientX,
+        y: e.clientY
+      });
+      e.preventDefault(); // Prevent context menu on right click
+      document.body.style.cursor = 'grabbing';
+    } else if (e.button === 0) { // Left click for cell interaction
+      setIsDragging(false);
+      setDragStart({
+        x: e.clientX,
+        y: e.clientY
+      });
+      setDragDistance(0);
+
+      // Calculate cell position immediately
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const containerWidth = containerRef.current.clientWidth;
+      const containerHeight = containerRef.current.clientHeight;
+
+      const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
+      const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
+
+      const col = Math.floor((relativeX - position.x) / cellSize);
+      const row = Math.floor((relativeY - position.y) / cellSize);
+
+      // Store the cell coordinates for potential activation
+      const pendingCell = { row, col };
+
+      // Add a very short delay (50ms) to check if this is a pan or a click
+      clickTimeoutRef.current = setTimeout(() => {
+        if (!isPanning && !isDragging) {
+          toggleCell(pendingCell.row, pendingCell.col);
+        }
+      }, 50);
+    }
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUpGlobal, { once: true });
+  };
+
   const handleMouseMove = useCallback(
     throttle((e) => {
-      if (dragStart.x === 0 && dragStart.y === 0) return;
+      if (isPanning) {
+        const dx = e.clientX - panStart.x;
+        const dy = e.clientY - panStart.y;
+        setPosition({ x: dx, y: dy });
+        positionRef.current = { x: dx, y: dy };
+        setGrid(prev => new Map(prev));
+      } else if (isDragging) {
+        const newX = e.clientX - dragStart.x;
+        const newY = e.clientY - dragStart.y;
+        const distance = Math.sqrt(
+          Math.pow(newX - position.x, 2) + 
+          Math.pow(newY - position.y, 2)
+        );
 
-      const newX = e.clientX - dragStart.x;
-      const newY = e.clientY - dragStart.y;
-      const currentPosition = positionRef.current; // Use ref for comparison
-      const dx = newX - currentPosition.x;
-      const dy = newY - currentPosition.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-
-      // Only start dragging after moving a certain distance
-      if (!isDragging && distance > 5) {
-        setIsDragging(true);
-      }
-
-      if (isDragging) { // Only update position if dragging
-        // Use RAF for smoother position updates
-        if (rafRef.current) {
-          cancelAnimationFrame(rafRef.current);
+        // Increase drag distance threshold to 10 pixels
+        if (distance > 10) {
+          setIsDragging(true);
+          // If we start dragging, cancel any pending cell activation
+          if (clickTimeoutRef.current) {
+            clearTimeout(clickTimeoutRef.current);
+            clickTimeoutRef.current = null;
+          }
         }
-        rafRef.current = requestAnimationFrame(() => {
-          setPosition({
-            x: newX,
-            y: newY
+
+        if (isDragging) {
+          if (rafRef.current) {
+            cancelAnimationFrame(rafRef.current);
+          }
+          rafRef.current = requestAnimationFrame(() => {
+            positionRef.current = { x: newX, y: newY };
+            setGrid(prev => new Map(prev));
+            rafRef.current = null;
           });
-          rafRef.current = null;
-        });
+        }
+        setDragDistance(distance);
       }
-      setDragDistance(distance);
-    }, 16), [dragStart, isDragging]); // Throttle limit 16ms (~60fps), dependencies are dragStart and isDragging
+    }, 16), [isPanning, isDragging, dragStart, panStart]);
+
+  const handleMouseUpGlobal = useCallback((e) => {
+    window.removeEventListener('mousemove', handleMouseMove);
+    
+    if (isPanning) {
+      setIsPanning(false);
+      setPanStart({ x: 0, y: 0 });
+      document.body.style.cursor = 'default';
+    } else {
+      setIsDragging(false);
+      setDragStart({ x: 0, y: 0 });
+      setDragDistance(0);
+    }
+
+    // Clear any pending click timeout
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+  }, [isPanning, isDragging, handleMouseMove]);
+
+  const loadPattern = useCallback((patternName) => {
+    if (!patternName || !containerRef.current) return;
+
+    const patternData = PATTERNS[patternName];
+    if (!patternData) return;
+
+    const pattern = patternData.pattern;
+    const newGrid = new Map();
+
+    // Calculate pattern dimensions
+    const patternHeight = pattern.length;
+    const patternWidth = pattern[0].length;
+
+    // Calculate center offset for the pattern
+    const startRow = -Math.floor(patternHeight / 2);
+    const startCol = -Math.floor(patternWidth / 2);
+
+    // Place pattern relative to (0,0)
+    for (let i = 0; i < patternHeight; i++) {
+      for (let j = 0; j < patternWidth; j++) {
+        if (pattern[i][j] === 1) {
+          newGrid.set(getCellKey(startRow + i, startCol + j), true);
+        }
+      }
+    }
+
+    setGrid(newGrid);
+    setGeneration(0);
+    setPopulation(newGrid.size);
+
+    // Center the view on the pattern's approximate center (0,0 in grid coordinates)
+    positionRef.current = { x: 0, y: 0 };
+    setGrid(prev => new Map(prev));
+  }, [getCellKey]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (clickTimeoutRef.current) {
+        clearTimeout(clickTimeoutRef.current);
+      }
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, []);
 
   const renderGrid = useCallback(() => {
     const { startRow, endRow, startCol, endCol } = getVisibleCells();
@@ -286,20 +410,6 @@ export default function Game() {
     }
     return cells;
   }, [cellSize, isDragging, getVisibleCells, getCellStyle, getCellKey]); // Dependencies are correct
-
-  // Cleanup RAF on unmount
-  useEffect(() => {
-    return () => {
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
-      
-      // Also clear any message timeout
-      if (messageTimeoutRef.current) {
-        clearTimeout(messageTimeoutRef.current);
-      }
-    };
-  }, []);
 
   const runSimulation = useCallback(() => {
     if (!runningRef.current) return;
@@ -356,88 +466,6 @@ export default function Game() {
     // Use setTimeout for the next step
     setTimeout(runSimulation, 100);
   }, [getCellKey]); // Removed setPopulation from here as it's handled within setGrid
-
-  const handleMouseDown = (e) => {
-    if (e.button === 0) { // Left click
-      setIsDragging(false); // Reset dragging state
-      setDragStart({
-        x: e.clientX - positionRef.current.x, // Use ref for initial position
-        y: e.clientY - positionRef.current.y
-      });
-      setDragDistance(0); // Reset drag distance
-      // Add mousemove listener to the window for smoother dragging
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUpGlobal, { once: true }); // Use once to auto-remove
-    }
-  };
-
-  // Separate mouse up handler for global listener
-  const handleMouseUpGlobal = useCallback((e) => {
-    window.removeEventListener('mousemove', handleMouseMove); // Clean up listener
-
-    // Only toggle cell if it was a click (not a drag)
-    if (!isDragging && dragDistance <= 5) {
-      if (!containerRef.current) return;
-
-      const containerRect = containerRef.current.getBoundingClientRect();
-      const containerWidth = containerRef.current.clientWidth;
-      const containerHeight = containerRef.current.clientHeight;
-
-      // Calculate relative position within the container
-      const relativeX = e.clientX - containerRect.left - (containerWidth / 2);
-      const relativeY = e.clientY - containerRect.top - (containerHeight / 2);
-
-      // Calculate cell coordinates based on position and cell size
-      const col = Math.floor((relativeX - positionRef.current.x) / cellSize); // Use ref
-      const row = Math.floor((relativeY - positionRef.current.y) / cellSize); // Use ref
-
-      toggleCell(row, col);
-    }
-
-    // Reset dragging state regardless
-    setIsDragging(false);
-    setDragStart({ x: 0, y: 0 }); // Reset drag start
-    setDragDistance(0);
-  }, [isDragging, dragDistance, cellSize, toggleCell, handleMouseMove]); // Added handleMouseMove to dependencies
-
-  const loadPattern = useCallback((patternName) => {
-    if (!patternName || !containerRef.current) return;
-
-    const patternData = PATTERNS[patternName];
-    if (!patternData) return;
-
-    const pattern = patternData.pattern;
-    const newGrid = new Map();
-
-
-
-    // Calculate pattern dimensions
-    const patternHeight = pattern.length;
-    const patternWidth = pattern[0].length;
-
-    // Calculate center offset for the pattern
-    const startRow = -Math.floor(patternHeight / 2);
-    const startCol = -Math.floor(patternWidth / 2);
-
-    // Place pattern relative to (0,0)
-    for (let i = 0; i < patternHeight; i++) {
-      for (let j = 0; j < patternWidth; j++) {
-        if (pattern[i][j] === 1) {
-          newGrid.set(getCellKey(startRow + i, startCol + j), true);
-        }
-      }
-    }
-
-    setGrid(newGrid);
-    setGeneration(0);
-    setPopulation(newGrid.size);
-
-    // Center the view on the pattern's approximate center (0,0 in grid coordinates)
-    setPosition({
-      x: 0,
-      y: 0
-    });
-  }, [getCellKey]); // Removed cellSize dependency
 
   // Center grid view initially & Start Session
   useEffect(() => {
@@ -505,8 +533,8 @@ export default function Game() {
         const containerHeight = containerRef.current.clientHeight;
 
         // Calculate the grid coordinate at the center of the viewport BEFORE zoom
-        const viewCenterX = (containerWidth / 2 - positionRef.current.x) / prevSize;
-        const viewCenterY = (containerHeight / 2 - positionRef.current.y) / prevSize;
+        const viewCenterX = (containerWidth / 2 - position.x) / prevSize;
+        const viewCenterY = (containerHeight / 2 - position.y) / prevSize;
 
         // Calculate the new position to keep the same grid coordinate at the center AFTER zoom
         const newX = containerWidth / 2 - viewCenterX * newSize;
@@ -859,18 +887,15 @@ export default function Game() {
         {/* Game Grid Container */}
         <div
           ref={containerRef}
-          style={{
-            width: '100%',
-            flex: 1,
-            position: 'relative',
-            overflow: 'hidden',
-            marginBottom: '0.75rem',
-            background: '#1a1a1a',
-            borderRadius: '12px',
-            minHeight: 0,
-            cursor: isDragging ? 'grabbing' : 'grab'
-          }}
           onMouseDown={handleMouseDown}
+          onContextMenu={(e) => e.preventDefault()} // Prevent context menu
+          style={{
+            position: 'relative',
+            width: '100%',
+            height: '100%',
+            overflow: 'hidden',
+            cursor: isPanning ? 'grabbing' : 'default'
+          }}
         >
           {/* Rendered Grid Cells */}
           <div style={{
